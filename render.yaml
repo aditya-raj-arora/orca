@@ -10,17 +10,12 @@
 # matching CI workflow (backend-ci / frontend-ci) passes on main — so a Render
 # deploy can never ship code that failed lint/tests (CONTRIBUTING.md Definition
 # of Done, extended to deployment).
-
-databases:
-  - name: orca-db
-    plan: free
-    postgresMajorVersion: "16"
-    # TODO(P4): confirm PostGIS is available on the plan tier you end up on —
-    # Render's free Postgres may not include the PostGIS extension. If not,
-    # either upgrade the DB plan or fall back to a self-hosted PostGIS
-    # (docker-compose.yml already has one) for the demo. schema.sql already
-    # runs `CREATE EXTENSION IF NOT EXISTS postgis;` so no schema change is
-    # needed once the extension is actually available.
+#
+# NOTE: the database is NOT provisioned here. Render's free Postgres plan
+# doesn't support the PostGIS extension that geofence_boundary (LLD §3) needs,
+# so orca-db lives on Supabase instead (free tier includes PostGIS) — see
+# docs/DEPLOYMENT.md. DATABASE_URL below is filled in manually with Supabase's
+# connection string rather than via Render's `fromDatabase`.
 
 services:
   - type: web
@@ -32,10 +27,11 @@ services:
     autoDeploy: false
     healthCheckPath: /healthz
     envVars:
+      # Supabase Postgres connection string (Session pooler, "Connect" tab on
+      # your Supabase project — see docs/DEPLOYMENT.md). Not fromDatabase
+      # since the DB isn't a Render resource.
       - key: DATABASE_URL
-        fromDatabase:
-          name: orca-db
-          property: connectionString
+        sync: false
       - key: APP_ENV
         value: production
       - key: LOG_LEVEL

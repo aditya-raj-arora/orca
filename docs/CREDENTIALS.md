@@ -13,7 +13,7 @@ committed) locally, and in the Render dashboard for deployment (see
 | 3 | `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` | P3 | ☐ |
 | 4 | `INCOIS_BASE_URL` (access method) | P3 | ☐ |
 | 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ☐ |
-| 6 | `DATABASE_URL` | P1/P4 | auto (local Docker or Render) |
+| 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); ☐ for prod (Supabase, see below) |
 | 7 | `RENDER_DEPLOY_HOOK_BACKEND` / `_FRONTEND` | P6 | ☐ (after Render setup) |
 
 ---
@@ -107,12 +107,15 @@ it's a Day 1 priority for P4.
 
 ## 6. `DATABASE_URL`
 
-No signup needed:
-
 - **Local dev**: already set in `src/backend/.env.example` for
-  `docker compose up` — points at the `db` service in `docker-compose.yml`.
-- **Render**: auto-populated by `render.yaml`'s `fromDatabase` reference once
-  `orca-db` exists — nothing to copy manually.
+  `docker compose up` — points at the self-hosted `postgis/postgis` `db`
+  service in `docker-compose.yml`. No signup needed.
+- **Production (Supabase)**: Render's free Postgres doesn't support PostGIS,
+  so production uses a free Supabase project instead. Create one at
+  supabase.com, run `src/backend/app/db/schema.sql` in its SQL Editor, then
+  copy the pooled connection string from Project Settings → Database →
+  Connection string (swap the prefix to `postgresql+asyncpg://`). Full
+  walkthrough: `docs/DEPLOYMENT.md` §A.
 
 ## 7. Render deploy hooks
 
