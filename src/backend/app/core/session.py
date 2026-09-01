@@ -19,14 +19,34 @@ class ConversationContext:
     # Ordered list of prior (query, resolved_entities) pairs for pronoun / omitted
     # -location resolution. Kept intentionally simple (list, not a graph) for the
     # prototype scope — see SRS §2.5 constraints.
+    #
+    # This in-memory list is a per-request cache the Gateway rehydrates from the
+    # conversation_turn table (app/db/session_repo.py::get_session_history) at
+    # the start of each turn; append_turn() below does NOT itself write to the
+    # DB — that's a separate persistence step the Gateway performs alongside
+    # this (LLD §3 record_agent_invocation / append_conversation_turn), so a
+    # unit test can exercise ConversationContext with zero DB dependency.
     turns: list[dict[str, Any]] = field(default_factory=list)
 
     def last_known_location(self) -> dict[str, Any] | None:
-        """TODO(P1): implement — walk `turns` backwards for the most recent
-        resolved location entity, used when a follow-up query omits location."""
-        raise NotImplementedError
+        """Walk `turns` backwards for the most recent resolved location entity,
+        used when a follow-up query omits location (FR-PLAN-5, LLD Fig.1's
+        "Location resolvable?" check falls back to this before asking a
+        clarifying question)."""
+        for turn in reversed(self.turns):
+            location = turn.get("location")
+            if location:
+                return location
+        return None
 
     def append_turn(self, query_text: str, resolved_entities: dict[str, Any]) -> None:
-        """TODO(P1): implement — append and (via app/db/session_repo.py, owned by
-        P4/P1 jointly) persist a conversation_turn row per LLD §3 schema."""
-        raise NotImplementedError
+        """Append this turn's resolved entities to the in-memory context so a
+        subsequent follow-up in the same session can resolve against it.
+
+        `resolved_entities` is expected to at least carry a "location" key
+        (possibly None, if this turn didn't resolve one) — see
+        PlannerAgent.plan() in orchestration/planner_agent.py, the only
+        caller. Separate from — and does not perform — the durable DB write;
+        see the class docstring above.
+        """
+        self.turns.append({"query_text": query_text, **resolved_entities})

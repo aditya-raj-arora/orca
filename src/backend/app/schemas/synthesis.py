@@ -26,6 +26,12 @@ class ExecutionPlan:
     invocations: list[AgentInvocationRequest] = field(default_factory=list)
     # Human-readable decisions, for FR-PLAN-4 / the agent-trace UI (FR-UI-3).
     trace: list[str] = field(default_factory=list)
+    # Contract addition (LLD Fig.1 "Ask clarifying follow-up for location" /
+    # low-confidence-extraction path, LLD §2.2): when true, invocations is
+    # always empty and the Gateway should send clarification_prompt back to
+    # the user as the turn's response instead of running any agents.
+    needs_clarification: bool = False
+    clarification_prompt: str | None = None
 
 
 @dataclass
