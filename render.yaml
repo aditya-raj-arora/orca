@@ -1,0 +1,90 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Owner: P6 (QA/Integration Lead), set up by P1 for Day-5/6 deploy readiness.
+#
+# One-time setup (manual, in the Render dashboard — see docs/DEPLOYMENT.md):
+#   New > Blueprint > connect this GitHub repo > Render reads this file and
+#   creates the three resources below.
+#
+# autoDeploy is OFF for both services deliberately: deploys are triggered by
+# .github/workflows/deploy-backend.yml / deploy-frontend.yml only AFTER the
+# matching CI workflow (backend-ci / frontend-ci) passes on main — so a Render
+# deploy can never ship code that failed lint/tests (CONTRIBUTING.md Definition
+# of Done, extended to deployment).
+
+databases:
+  - name: orca-db
+    plan: free
+    postgresMajorVersion: "16"
+    # TODO(P4): confirm PostGIS is available on the plan tier you end up on —
+    # Render's free Postgres may not include the PostGIS extension. If not,
+    # either upgrade the DB plan or fall back to a self-hosted PostGIS
+    # (docker-compose.yml already has one) for the demo. schema.sql already
+    # runs `CREATE EXTENSION IF NOT EXISTS postgis;` so no schema change is
+    # needed once the extension is actually available.
+
+services:
+  - type: web
+    name: orca-backend
+    runtime: docker
+    dockerfilePath: src/backend/Dockerfile
+    dockerContext: src/backend
+    plan: free
+    autoDeploy: false
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: orca-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # CORS: set this to the orca-frontend URL Render assigns, once known
+      # (see docs/DEPLOYMENT.md step 5).
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      # Secrets — fill in via the Render dashboard, never commit real values
+      # (NFR-SEC-2). sync:false means Render prompts for these on first
+      # deploy and does not track them in this file.
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: LLM_API_KEY
+        sync: false
+      - key: BHASHINI_API_KEY
+        sync: false
+      - key: BHASHINI_USER_ID
+        sync: false
+      - key: BHASHINI_BASE_URL
+        value: https://bhashini.gov.in/api
+      - key: WEATHER_API_KEY
+        sync: false
+      - key: WEATHER_API_BASE_URL
+        sync: false
+      - key: INCOIS_BASE_URL
+        value: https://incois.gov.in
+      - key: GIS_BOUNDARY_DATA_PATH
+        value: ./data/gis/imbl_mpa_boundaries.geojson
+      - key: IMBL_BUFFER_KM
+        value: "5"
+
+  - type: web
+    name: orca-frontend
+    runtime: static
+    buildCommand: cd src/frontend && npm install && npm run build
+    staticPublishPath: src/frontend/dist
+    autoDeploy: false
+    envVars:
+      # TODO(P5/P6): wire src/frontend/src/api/wsClient.ts to read these at
+      # build time (import.meta.env.VITE_API_BASE_URL /
+      # import.meta.env.VITE_WS_BASE_URL) instead of the relative /api, /ws
+      # paths the Vite dev proxy uses — a static site has no backend to
+      # proxy to, so the frontend must call the backend's absolute Render URL.
+      - key: VITE_API_BASE_URL
+        sync: false
+      - key: VITE_WS_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

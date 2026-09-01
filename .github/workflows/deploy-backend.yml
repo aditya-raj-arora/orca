@@ -1,0 +1,29 @@
+# Deploys orca-backend on Render — ONLY after backend-ci.yml passes on main.
+# Owner: P6 (QA/Integration Lead).
+#
+# Setup (one-time, see docs/DEPLOYMENT.md): after creating the Render Blueprint
+# from render.yaml, copy orca-backend's Deploy Hook URL (Render dashboard >
+# orca-backend > Settings > Deploy Hook) into this repo's Actions secret
+# RENDER_DEPLOY_HOOK_BACKEND.
+name: deploy-backend
+
+on:
+  workflow_run:
+    workflows: ["backend-ci"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_BACKEND }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_BACKEND secret not set — skipping deploy. See docs/DEPLOYMENT.md."
+            exit 0
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_BACKEND }}"

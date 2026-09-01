@@ -32,7 +32,8 @@ export type ServerErrorMessage = { type: "error"; message: string };
 export type ServerMessage = ServerTraceUpdate | ServerFinalResponse | ServerErrorMessage;
 
 // TODO(P5): implement connect()/send()/onMessage() around a real WebSocket,
-// with reconnect handling appropriate for the low-bandwidth, potentially
+// using WS_BASE_URL (see ./config.ts) as the origin in production, with
+// reconnect handling appropriate for the low-bandwidth, potentially
 // high-latency coastal network conditions called out in SRS §2.4.
 export function connect(_sessionId: string): void {
   throw new Error("TODO(P5): implement WebSocket client — see wsClient.ts doc comment");

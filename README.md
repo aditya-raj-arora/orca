@@ -19,6 +19,7 @@ and fishing-ground questions — built by correlating live weather, oceanographi
 | See who owns what, the build schedule, tech stack | [`docs/ORCA_Chat_Summary.docx`](docs/ORCA_Chat_Summary.docx) — Role assignments & 6-day plan |
 | Understand how we work (branching, PRs, traceability) | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Know who to ping for a given file | [`CODEOWNERS`](CODEOWNERS) |
+| Deploy or check the deploy pipeline | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 
 ## System at a glance
 

@@ -1,0 +1,28 @@
+# Deploys orca-frontend on Render — ONLY after frontend-ci.yml passes on main.
+# Owner: P6 (QA/Integration Lead).
+#
+# Setup (one-time, see docs/DEPLOYMENT.md): copy orca-frontend's Deploy Hook
+# URL (Render dashboard > orca-frontend > Settings > Deploy Hook) into this
+# repo's Actions secret RENDER_DEPLOY_HOOK_FRONTEND.
+name: deploy-frontend
+
+on:
+  workflow_run:
+    workflows: ["frontend-ci"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_FRONTEND }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_FRONTEND secret not set — skipping deploy. See docs/DEPLOYMENT.md."
+            exit 0
+          fi
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_FRONTEND }}"
