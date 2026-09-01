@@ -21,29 +21,42 @@ Raw captured responses live in [`docs/samples/`](samples/). Reproduce with
 |---|---|---|---|
 | Wind, precipitation, visibility (FR-WX-1) | **Open-Meteo Forecast API** | **none** | high — verified |
 | Wave height (FR-WX-1) | **Open-Meteo Marine API** | **none** | high — verified |
-| Active alerts: cyclone / lightning / high-wave (FR-WX-2) | **IMD API** (`api.imd.gov.in`) — cyclone track + district/subdivision warnings + nowcast + coastal/sea bulletins | free key (registration) | medium — endpoints documented, key not yet obtained |
-| Data timestamp (FR-WX-3) | every Open-Meteo + IMD payload carries an ISO/`time` field | — | high |
+| Active alerts: cyclone / severe weather (FR-WX-2) | **WeatherAPI.com** `forecast.json?...&alerts=yes` (lat/lon native) + **GDACS** GeoRSS for tropical cyclones | WeatherAPI: free key (email, no card); GDACS: none | high — both verified with a live key/feed 2026-09-01 |
+| Data timestamp (FR-WX-3) | every Open-Meteo / WeatherAPI / GDACS payload carries an ISO time field | — | high |
 | SST + chlorophyll (FR-OCEAN-2) | **INCOIS GeoServer WMS `GetFeatureInfo`** (JSON) | none | medium — SST verified, chl came back empty |
 | Nearest PFZ + distance/bearing (FR-OCEAN-1, FR-OCEAN-3) | **unresolved** — no vector feed found yet | none | low — needs §4.2 |
 | Staleness flag (FR-OCEAN-4) | derive from the layer/advisory publish date | — | medium |
 
-Net: the **weather forecast half is fully unblocked, no account needed**
-(Open-Meteo). **FR-WX-2 alerts need a free IMD API key** — the app can run
-degraded (no alerts) until it lands, so it doesn't block issue #10. The
-**Ocean Agent is partially blocked** — SST is fine, but the PFZ geometry that
-`get_nearest_pfz()` needs (LLD §4.3) has no confirmed source yet. The adapter
-contract (`AdapterResult`, LLD §2.9) is unaffected either way, so schema-lock
-on Day 1 is not at risk.
+Net: the **weather half is unblocked** — Open-Meteo (forecast + wave) and
+GDACS are keyless; the WeatherAPI.com free key is obtained and its alert
+samples captured. The app runs degraded (no alerts) if the alert sources are
+unreachable, so nothing here blocks issue #10. The **Ocean Agent is partially
+blocked** — SST is fine, but the PFZ geometry that `get_nearest_pfz()` needs
+(LLD §4.3) has no confirmed source yet. The adapter contract (`AdapterResult`,
+LLD §2.9) is unaffected either way, so schema-lock on Day 1 is not at risk.
 
 ---
 
 ## 2. Weather provider
 
-HLD §6 / CREDENTIALS.md #3 offered **OpenWeather** or **IMD bulletins**. We
-started on OpenWeather One Call, then dropped it: One Call 3.0/4.0 both need a
-paid *"One Call by Call"* subscription (card on file even for the free 1k/day
-tier), which is exactly the constraint that pushed the LLM choice to Gemini
-(HLD v1.1 §6). Chosen instead: **Open-Meteo + IMD**, both card-free.
+HLD §6 / CREDENTIALS.md #3 offered **OpenWeather** or **IMD bulletins**.
+
+- **OpenWeather** — dropped. One Call 3.0/4.0 both need the paid *"One Call by
+  Call"* subscription (card on file even for the free 1k/day tier), the same
+  constraint that pushed the LLM choice to Gemini (HLD v1.1 §6).
+- **IMD API** (`api.imd.gov.in`) — evaluated in depth, then dropped. It *is*
+  the authoritative Indian warnings source and its endpoints fit FR-WX-2 well
+  (`/coastalbulletin`, `/districtwarning`, `/districtnowcast`,
+  `/cyclone_track`, `/cyclone_wind`), but access requires: account →
+  email verify → **"Complete Profile" vetting form** (ID proof upload +
+  *permission letter from Head of Institute* + a 4-question declaration) →
+  **manual review**. Too slow / too heavy for the sprint. Every endpoint 401s
+  `{"error":"API key missing"}` until approved. Kept as a **later** option: if
+  IMD's official wording is wanted, pull it from the **WMO Alert Hub**
+  (`severeweather.wmo.int` / `alert-hub.org`), which re-publishes IMD CAP
+  warnings with no IMD account.
+
+Chosen stack — all card-free, mostly keyless:
 
 ### Findings
 
@@ -59,51 +72,59 @@ tier), which is exactly the constraint that pushed the LLM choice to Gemini
   - `wave_height`, `wave_direction`, `wave_period` (+ wind-wave / swell
     split), `current` and `hourly` — FR-WX-1.
   - Verified: Kochi → `wave_height: 1.26 m`, `wave_period: 10.15 s`.
-- **IMD API** — `https://api.imd.gov.in/api/v1/...`
-  - India's official met agency; the *authoritative* source for cyclone /
-    high-wave / thunderstorm warnings in Indian waters — the right feed for
-    FR-WX-2, and on-theme for an ISRO disaster-management brief.
-  - **Free, no card, but needs a free account + API key** from
-    `api.imd.gov.in/register.php`. Every endpoint returns
-    `{"error":"API key missing"}` (HTTP 401) without it — verified. Key
-    transport (header vs query param) and any approval delay are only
-    visible after registering.
-  - Relevant endpoints (from `api.imd.gov.in/public/api_reference.html`):
-    | Endpoint | Gives |
-    |---|---|
-    | `/cyclone_track`, `/cyclone_wind` (GeoJSON), `/cyclone_cou` | active cyclone position / wind-threshold polygons / forecast cone |
-    | `/districtwarning`, `/subdivisionwarning` | 5-day colour-coded warnings (thunderstorm/lightning, heavy rain, high wave) |
-    | `/districtnowcast`, `/stationnowcast` | real-time nowcast warning categories |
-    | `/coastalbulletin`, `/seabulletin`, `/portwarning` | fishermen / coastal wind + sea-state + visibility warnings |
-  - Warnings are keyed by **district / subdivision / station / sea-area id**,
-    not lat/lon → the adapter needs a lat/lon → id lookup (see §2 decision).
+- **WeatherAPI.com** — `https://api.weatherapi.com/v1/forecast.json`
+  - **Free key, email signup, no card, no documents, instant.** Free tier
+    ~1M calls/month (confirm on the dashboard). **Key transport: `?key=`
+    query param** (no header variant) — confirmed against a live key.
+  - `?q=<lat>,<lon>&days=3&alerts=yes&aqi=no` → `alerts.alert[]`
+    (CAP-sourced government warnings) — FR-WX-2. Each alert object:
+    `headline`, `msgtype`, `severity`, `urgency`, `areas`, `category`,
+    `certainty`, `event`, `note`, `effective`, `expires`, `desc`,
+    `instruction`. Adapter maps `event`/`headline` → `active_alerts[]`,
+    keeps `severity` + `expires` for Risk/Safety + FR-WX-3.
+  - **lat/lon native — no district-id mapping** (the main reason it beats IMD
+    for this project). One call; response also carries `current` (wind, gust,
+    vis, precip) as a cross-check on Open-Meteo.
+  - **Verified 2026-09-01:** Kochi / Chennai / Kollam → HTTP 200,
+    `alerts.alert: []` (no active alerts at capture time — the empty shape,
+    committed under `docs/samples/weather/weatherapi_alerts_*.json`, trimmed
+    to `location`+`current`+`alerts`).
+  - India government-alert coverage is partial (depends what WeatherAPI
+    ingests) — acceptable for a prototype; GDACS backstops cyclones.
+- **GDACS GeoRSS** — `https://www.gdacs.org/xml/rss.xml`
+  - **No key.** UN/EC-run global multi-hazard feed; includes **tropical
+    cyclones** over the North Indian Ocean.
+  - GeoRSS/XML: `<gdacs:eventtype>TC</gdacs:eventtype>`, `<geo:lat>`,
+    `<geo:long>`, `<gdacs:alertlevel>` (Green/Orange/Red), affected-area
+    polygon. Verified reachable 2026-09-01 (`rss.xml`, ~150 KB).
+  - Adapter filters to `eventtype == TC` and distance from the query point.
 
 ### Decision
 
-`WeatherDataAdapter.fetch()` (LLD §2.9) makes **three upstream calls** and
-normalises them into one `dict`:
+`WeatherDataAdapter.fetch()` (LLD §2.9) makes **up to four upstream calls**,
+concurrently, and normalises them into one `dict`:
 
 1. Open-Meteo Forecast → wind, precipitation, visibility
 2. Open-Meteo Marine → wave height
-3. IMD → active alerts (`active_alerts: list[str]` in `WeatherResult`)
+3. WeatherAPI `alerts=yes` → `active_alerts` (`list[str]` in `WeatherResult`)
+4. GDACS RSS → append any active TC near the point to `active_alerts`
 
 Failure handling (FR-WX-4 / NFR-REL-2), to confirm with P1 since Risk/Safety
 keys off `status` (LLD §4.2):
 
 - **Calls 1 or 2 fail** → adapter returns `AdapterResult(status='unavailable')`.
   No partial/fabricated `WeatherResult`.
-- **Call 3 (IMD) fails or no key configured** → return the forecast data with
-  `active_alerts = []` **and a flag** (e.g. `alerts_source_unavailable=True`
-  in the raw dict) so Synthesis can say "alert data unavailable" rather than
-  imply "no alerts". Do **not** downgrade the whole result to `unavailable`
-  just because alerts are missing — but Risk/Safety must treat unknown-alerts
-  as not-safe per NFR-REL-2. **P1 to rule on this exact policy at contract-lock.**
-
-lat/lon → IMD id: ship a small static lookup of coastal districts /
-sea-area ids (issue #10 scope), start with the ~8 demo locations, widen later.
+- **Calls 3 and 4 both fail / no WeatherAPI key** → return the forecast data
+  with `active_alerts = []` **and a flag** (e.g. `alerts_source_unavailable=
+  True` in the raw dict) so Synthesis can say "alert data unavailable" rather
+  than imply "no alerts". Do **not** downgrade the whole result to
+  `unavailable` just for missing alerts — but Risk/Safety must treat
+  unknown-alerts as not-safe per NFR-REL-2. **P1 to rule on this exact policy
+  at contract-lock.**
+- If only one of 3/4 succeeds, use it and drop the flag.
 
 `.env` keys: `WEATHER_FORECAST_BASE_URL`, `MARINE_API_BASE_URL`,
-`IMD_API_BASE_URL`, `IMD_API_KEY` (see `.env.example`).
+`WEATHERAPI_BASE_URL`, `WEATHERAPI_KEY`, `GDACS_BASE_URL` (see `.env.example`).
 
 ### Sample calls
 
@@ -117,11 +138,15 @@ GET https://marine-api.open-meteo.com/v1/marine
     ?latitude=9.93&longitude=76.26
     &current=wave_height,wave_direction,wave_period&hourly=wave_height&forecast_days=2
 
-GET https://api.imd.gov.in/api/v1/subdivisionwarning        # 401 until IMD_API_KEY is set
+GET https://api.weatherapi.com/v1/forecast.json
+    ?key=$WEATHERAPI_KEY&q=9.93,76.26&days=3&alerts=yes&aqi=no   # needs the free key
+
+GET https://www.gdacs.org/xml/rss.xml                            # keyless
 ```
 
-Open-Meteo responses are committed under `docs/samples/weather/`. The IMD
-sample needs the key — run `IMD_API_KEY=… scripts/p3_sample_calls.sh`.
+Open-Meteo + GDACS responses are committed under `docs/samples/weather/`. The
+WeatherAPI sample needs the key — run
+`WEATHERAPI_KEY=… scripts/p3_sample_calls.sh`.
 
 ---
 
@@ -196,22 +221,26 @@ editing it in a P3 branch.
 ## 4. Open items for the team
 
 ### 4.1 Weather (P3)
-1. **Open-Meteo (forecast + marine): nothing to do** — no key, samples already
-   committed under `docs/samples/weather/`.
-2. **IMD API key** (needed for FR-WX-2 alerts, not for FR-WX-1):
-   - Register at `https://api.imd.gov.in/register.php` (free, no card). Note
-     whether it's instant or needs approval.
-   - Put the key in local `src/backend/.env` as `IMD_API_KEY`, run
-     `IMD_API_KEY=… scripts/p3_sample_calls.sh`, commit the IMD samples.
-   - From the samples, confirm how the key is passed (header vs `?api_key=`)
-     and note it in this doc for the adapter.
-3. **P1 to rule at contract-lock:** the "IMD unavailable / no key" policy in
+1. **Open-Meteo (forecast + marine) + GDACS: done** — no key; samples committed
+   under `docs/samples/weather/`.
+2. **WeatherAPI.com: key obtained, samples captured** (Kochi/Chennai/Kollam,
+   `alerts.alert: []` at capture time). Remaining:
+   - Confirm the exact **free-tier rate limit** from the dashboard and note it
+     in §2.
+   - Capture one **populated-alert** example (any location with an active
+     warning) so the adapter's `alerts.alert[]` mapping is tested against a
+     non-empty payload — commit it alongside the others.
+   - **Rotate the key** — it was shared in plaintext during setup. Regenerate
+     on the WeatherAPI dashboard, put the new value only in local
+     `src/backend/.env` (gitignored) and the Render secret.
+3. **P1 to rule at contract-lock:** the "alerts unavailable / no key" policy in
    §2 — forecast still returned, `active_alerts=[]` + unavailable flag, and
-   Risk/Safety treats unknown-alerts as not-safe (NFR-REL-2). Also: 3
-   sequential upstream calls vs. NFR-PERF-1's 8 s single-agent budget (fine,
-   but do them concurrently in the adapter).
+   Risk/Safety treats unknown-alerts as not-safe (NFR-REL-2). Also: 4 upstream
+   calls vs. NFR-PERF-1's 8 s single-agent budget — do them concurrently.
 4. Retire `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` from `render.yaml`
-   (P1/P6) — no longer used.
+   (P1/P6) — no longer used. Add `WEATHERAPI_KEY` as a `sync: false` secret.
+5. Later, optional: if IMD's official warning wording is wanted, add a WMO
+   Alert Hub CAP reader (`severeweather.wmo.int`) — no IMD account needed.
 
 ### 4.2 INCOIS PFZ geometry — needs a decision (blocks part of issue #15)
 Pick one, ideally at the Day-1 sync with P1:
@@ -231,11 +260,12 @@ Pick one, ideally at the Day-1 sync with P1:
   (NFR-REL-1). Flag explicitly to P1/P6, don't let it become silent scope.
 
 ### 4.3 `.env.example` / `CREDENTIALS.md`
-Updated in this branch: weather block switched to
-`WEATHER_FORECAST_BASE_URL` / `MARINE_API_BASE_URL` / `IMD_API_BASE_URL` /
-`IMD_API_KEY`; `WEATHER_API_KEY` marked retired. INCOIS comment records "no
-key, WMS GetFeatureInfo + bulletin". CREDENTIALS.md #3/#4 moved to
-"in progress". Flip #3 to ✓ once the IMD key + sample land; #4 once §4.2 lands.
+Updated in this branch: weather block is `WEATHER_FORECAST_BASE_URL` /
+`MARINE_API_BASE_URL` / `WEATHERAPI_BASE_URL` / `WEATHERAPI_KEY` /
+`GDACS_BASE_URL`; `WEATHER_API_KEY` marked retired; IMD noted as evaluated and
+dropped. INCOIS comment records "no key, WMS GetFeatureInfo + bulletin".
+CREDENTIALS.md #3/#4 moved to "in progress". Flip #3 to ✓ once the WeatherAPI
+key + sample land; #4 once §4.2 lands.
 
 ---
 
@@ -247,8 +277,9 @@ key, WMS GetFeatureInfo + bulletin". CREDENTIALS.md #3/#4 moved to
   `precipitation` / `visibility` field though FR-WX-1 lists them and
   Open-Meteo returns them. Decide add-now vs. defer (already flagged as a
   TODO in `app/schemas/weather.py`).
-- `WeatherResult.active_alerts: list[str]` is adequate for IMD alert strings,
-  but consider whether a per-source "alert data unavailable" flag is needed so
-  Synthesis can distinguish "no alerts" from "couldn't reach IMD" (NFR-REL-1).
+- `WeatherResult.active_alerts: list[str]` is adequate for WeatherAPI / GDACS
+  alert strings, but consider whether a per-source "alert data unavailable"
+  flag is needed so Synthesis can distinguish "no alerts" from "couldn't reach
+  the alert sources" (NFR-REL-1).
 - `OceanParams` handling `None` for chl is already in the contract — good,
   because chl will frequently be `None` in practice.

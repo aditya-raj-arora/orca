@@ -1,0 +1,60 @@
+{
+  "location": {
+    "name": "Tekkumuri",
+    "region": "Kerala",
+    "country": "India",
+    "lat": 9.9,
+    "lon": 76.283,
+    "tz_id": "Asia/Kolkata",
+    "localtime_epoch": 1788259471,
+    "localtime": "2026-09-01 16:14"
+  },
+  "current": {
+    "last_updated_epoch": 1788258600,
+    "last_updated": "2026-09-01 16:00",
+    "temp_c": 28.0,
+    "temp_f": 82.4,
+    "is_day": 1,
+    "condition": {
+      "text": "Sunny",
+      "icon": "//cdn.weatherapi.com/weather/64x64/day/113.png",
+      "code": 1000
+    },
+    "wind_mph": 12.1,
+    "wind_kph": 19.4,
+    "wind_degree": 307,
+    "wind_dir": "NW",
+    "pressure_mb": 1011.0,
+    "pressure_in": 29.85,
+    "precip_mm": 0.0,
+    "precip_in": 0.0,
+    "humidity": 74,
+    "cloud": 6,
+    "feelslike_c": 31.2,
+    "feelslike_f": 88.2,
+    "windchill_c": 28.0,
+    "windchill_f": 82.4,
+    "heatindex_c": 31.4,
+    "heatindex_f": 88.6,
+    "dewpoint_c": 23.0,
+    "dewpoint_f": 73.3,
+    "vis_km": 10.0,
+    "vis_miles": 6.0,
+    "uv": 2.1,
+    "gust_mph": 17.3,
+    "gust_kph": 27.8,
+    "will_it_rain": 0,
+    "chance_of_rain": 7,
+    "will_it_snow": 0,
+    "chance_of_snow": 0,
+    "wetbulb_c": 24.3,
+    "wetbulb_f": 75.8,
+    "short_rad": 0.0,
+    "diff_rad": 0.0,
+    "dni": 0.0,
+    "gti": 0.0
+  },
+  "alerts": {
+    "alert": []
+  }
+}
