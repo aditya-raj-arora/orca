@@ -9,7 +9,7 @@ Reference: LLD v1.0 §2.9.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import get_settings
@@ -32,4 +32,4 @@ class INCOISAdapter(DataSourceAdapter):
         raise NotImplementedError
 
     def _now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.db.models import AgentInvocation, ConversationTurn, Session
+from app.db.models import ConversationTurn
 
 
 async def create_session(language: str | None, client_metadata: dict | None) -> uuid.UUID:

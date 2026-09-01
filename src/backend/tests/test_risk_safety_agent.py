@@ -14,7 +14,10 @@ blocking CI before the agent exists.
 import pytest
 
 pytestmark = pytest.mark.xfail(
-    reason="RiskSafetyAgent.evaluate() not yet implemented — see app/agents/risk_safety_agent.py TODOs",
+    reason=(
+        "RiskSafetyAgent.evaluate() not yet implemented — "
+        "see app/agents/risk_safety_agent.py TODOs"
+    ),
     strict=False,
 )
 
