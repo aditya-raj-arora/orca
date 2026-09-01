@@ -10,8 +10,8 @@ committed) locally, and in the Render dashboard for deployment (see
 |---|---|---|---|
 | 1 | `LLM_API_KEY` | P2 | ☐ |
 | 2 | `BHASHINI_API_KEY` / `BHASHINI_USER_ID` | P2 | ☐ |
-| 3 | `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` | P3 | ☐ |
-| 4 | `INCOIS_BASE_URL` (access method) | P3 | ☐ |
+| 3 | Weather: `WEATHER_FORECAST_BASE_URL`, `MARINE_API_BASE_URL` (Open-Meteo, no key) + `IMD_API_KEY` (alerts) | P3 | ◑ forecast+wave keyless & verified; only `IMD_API_KEY` (free, no card, `api.imd.gov.in/register.php`) still to get. See `docs/p3-data-source-spike.md` §2 |
+| 4 | `INCOIS_BASE_URL` (access method) | P3 | ◑ no API/key; SST+chl via GeoServer WMS confirmed & sampled; PFZ geometry source still open. See `docs/p3-data-source-spike.md` §3–4 |
 | 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ☐ |
 | 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); ☐ for prod (Supabase, see below) |
 | 7 | `RENDER_DEPLOY_HOOK_BACKEND` / `_FRONTEND` | P6 | ☐ (after Render setup) |
@@ -65,21 +65,31 @@ the problem statement**, so worth getting sorted early (SRS RISK-2).
 
 ## 3. Weather / marine data provider
 
-Powers `WeatherDataAdapter` (LLD §2.9). HLD §6 names two options — pick one:
+Powers `WeatherDataAdapter` (LLD §2.9). HLD §6 named OpenWeather or IMD
+bulletins; the spike settled it (see the blockquote below). The Data Access
+Layer isolates the choice from the rest of the system (LLD §2.9 design note),
+so this can still change without touching any agent.
 
-- **OpenWeather Marine/Weather API**: openweathermap.org/api → Sign Up → free
-  tier gives an API key immediately (`WEATHER_API_KEY`); check which specific
-  endpoint gives wind/wave/precipitation/visibility (One Call API 3.0 is the
-  usual pick) and set `WEATHER_API_BASE_URL` to its base (e.g.
-  `https://api.openweathermap.org/data/3.0`).
-- **IMD public bulletins**: mausam.imd.gov.in — these are typically public
-  HTML/structured bulletins rather than a clean REST API; if you go this
-  route, confirm the actual data shape first (may need light scraping,
-  which changes the adapter's implementation but not its contract).
+Historical options considered:
+- **OpenWeather** (`openweathermap.org/api`) — dropped: One Call 3.0/4.0
+  require the paid *"One Call by Call"* plan (card on file).
+- **IMD** (`api.imd.gov.in`) — kept, for official warnings (FR-WX-2).
+- **Open-Meteo** (`open-meteo.com`) — added, for keyless forecast + wave data.
 
-Either is fine per HLD — the Data Access Layer isolates the choice from the
-rest of the system (LLD §2.9 design note). No signup approval delay expected
-with OpenWeather; IMD may need more digging into exact bulletin URLs.
+> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §2):** OpenWeather
+> was **dropped** — One Call 3.0/4.0 both need the paid *"One Call by Call"*
+> subscription (card on file even for the free 1k/day tier), the same
+> constraint that moved the LLM choice to Gemini. Replaced with a card-free
+> stack:
+> - **Open-Meteo Forecast API** (`WEATHER_FORECAST_BASE_URL=https://api.open-meteo.com/v1`)
+>   — wind / precipitation / visibility. **No key, no signup.** Verified.
+> - **Open-Meteo Marine API** (`MARINE_API_BASE_URL=https://marine-api.open-meteo.com/v1`)
+>   — wave height. **No key.** Verified.
+> - **IMD API** (`IMD_API_BASE_URL=https://api.imd.gov.in/api/v1`) — cyclone /
+>   district & subdivision warnings / nowcast / coastal bulletins for FR-WX-2.
+>   Free, no card, **but needs `IMD_API_KEY`** from a free account at
+>   `api.imd.gov.in/register.php` (every endpoint 401s without it). This is
+>   the only weather credential to obtain, and only alerts depend on it.
 
 ## 4. INCOIS — Potential Fishing Zone / oceanographic data
 
@@ -95,6 +105,22 @@ flagged as "confirm API vs. scraping"** — do this before writing
   sample retrieval before Sprint 1 starts (SRS §6.5 Sprint 0 exit criteria).
 - No API key needed if it's public bulletin data — `INCOIS_BASE_URL` is just
   the base URL you're fetching from.
+
+> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §3):**
+> - **No REST API and no key.** Access is via OGC web services + bulletins.
+> - **SST + chlorophyll (FR-OCEAN-2): confirmed & sampled** — GeoServer WMS
+>   `GetFeatureInfo` with `INFO_FORMAT=application/json` against
+>   `https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wms` (layers `sst`,
+>   `chl`). Real SST values captured for Kochi/Kollam; watch the `GRAY_INDEX
+>   = -1` / `null` no-data sentinels → must become `None`, never a guess.
+>   Samples in `docs/samples/incois/`.
+> - **PFZ centroids / advisory geometry (FR-OCEAN-1/3): still open** — no
+>   vector (WFS) layer; the text advisory isn't a plain GET. Options (browser
+>   devtools dig / email INCOIS / parse the PDF bulletin) are in the spike
+>   doc §4.2. **Emailing INCOIS user services should happen today** — reply
+>   latency is the risk.
+> - ERDDAP (`erddap.incois.gov.in`) is a clean JSON/CSV fallback for SST/chl;
+>   some datasets are archival, verify recency.
 
 ## 5. GIS boundary data — IMBL and MPA
 
