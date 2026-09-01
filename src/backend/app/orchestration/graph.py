@@ -211,10 +211,15 @@ def _synthesis_node(agent: SynthesisAgent):
             composed = ComposedResponse(text=plan.clarification_prompt or "")
             return {"composed": composed, "trace": ["Synthesis: skipped (clarification requested)"]}
 
-        composed = await asyncio.to_thread(
-            agent.compose, plan, state.get("results", {}), state.get("language", "en")
+        composed, trace_line = await _call_bounded(
+            agent.compose,
+            plan,
+            state.get("results", {}),
+            state.get("language", "en"),
+            unavailable=_unavailable_composed_response(),
+            agent_label="Synthesis Agent",
         )
-        return {"composed": composed, "trace": ["Synthesis: response composed"]}
+        return {"composed": composed, "trace": [trace_line]}
 
     return _node
 
@@ -309,6 +314,19 @@ def _unavailable_weather_result() -> Any:
     from app.schemas.weather import WeatherResult
 
     return WeatherResult(wind_speed_kmh=0.0, wave_height_m=0.0, status="unavailable")
+
+
+def _unavailable_composed_response() -> ComposedResponse:
+    """SynthesisAgent.compose() raising or timing out (e.g. NotImplementedError
+    while #14/#9 are still in flight, or a real LLM failure later) must not
+    crash the whole query — same "degrade, don't crash" rule _call_bounded
+    already applies to every other node. No fabricated claims, no citations
+    (there's nothing to cite), and the wording doesn't imply an answer was
+    given (contrast with a genuine INSUFFICIENT_DATA verdict, which IS an
+    answer)."""
+    return ComposedResponse(
+        text="Sorry, I couldn't put together an answer for that just now — please try again."
+    )
 
 
 # ---------------------------------------------------------------------- #
