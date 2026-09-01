@@ -6,8 +6,9 @@
  * Implements: FR-UI-1, FR-UI-4.
  * Reference: HLD v1.0 §3 "Web Client", LLD v1.0 §5.2 (WebSocket message shapes).
  */
-import { useState } from "react";
-import type { ServerFinalResponse } from "../../api/wsClient";
+import { useEffect, useState, useRef } from "react";
+import { wsClient } from "../../api/wsClient";
+import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
 import "./ChatPanel.css";
 
 type ChatMessage = {
@@ -17,17 +18,42 @@ type ChatMessage = {
   verdict?: ServerFinalResponse["verdict"];
 };
 
-// Hardcoded mock to prove the layout renders a ServerFinalResponse end-to-end.
-const MOCK_RESPONSE: ChatMessage = {
-  id: "mock-1",
-  sender: "system",
-  text: "Conditions near Kochi are currently clear. Sea state is calm with wave heights below 1.5 m. PFZ advisory suggests good fishing potential 12 nm southwest.",
-  verdict: "SAFE",
-};
-
 export default function ChatPanel() {
-  const [messages, setMessages] = useState<ChatMessage[]>([MOCK_RESPONSE]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const [sessionId] = useState(() => {
+    return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("orca_session", sessionId);
+
+    wsClient.connect(sessionId, (msg: ServerMessage) => {
+      if (msg.type === "final_response") {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            sender: "system",
+            text: msg.text,
+            verdict: msg.verdict,
+          },
+        ]);
+      } else if (msg.type === "error") {
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now().toString(), sender: "system", text: `Error: ${msg.message}` },
+        ]);
+      }
+      // TODO(P5, Sprint 3): hand off trace_update to TraceViewer
+    });
+  }, [sessionId]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const handleSendText = () => {
     if (!inputText.trim()) return;
@@ -37,14 +63,7 @@ export default function ChatPanel() {
       { id: Date.now().toString(), sender: "user", text: inputText },
     ]);
 
-    // TODO(P5, Sprint 1): replace with real/mock WebSocket response
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        { ...MOCK_RESPONSE, id: Date.now().toString() },
-      ]);
-    }, 500);
-
+    wsClient.send({ type: "query", mode: "text", text: inputText });
     setInputText("");
   };
 
@@ -61,6 +80,7 @@ export default function ChatPanel() {
             <div>{m.text}</div>
           </div>
         ))}
+        <div ref={messagesEndRef} />
       </div>
 
       <div className="chat-input-area">
