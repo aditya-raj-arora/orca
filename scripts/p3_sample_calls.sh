@@ -96,16 +96,17 @@ if curl -fsS -m 60 \
   python3 - "$_pfz" "$OUT_INCOIS/pfz_wfs_pfzlines_sample.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); fs = d["features"]
-def strip(f):  # keep properties + a geometry summary, drop the vertex list
-    g = f["geometry"]; npts = sum(len(l) for l in g["coordinates"])
-    return {"type": "Feature", "properties": f["properties"],
-            "geometry": {"type": g["type"], "_vertices": npts,
-                         "_first_coord": g["coordinates"][0][0]}}
+def npts(f):
+    return sum(len(l) for l in f["geometry"]["coordinates"])
+# keep the 3 features with the fewest vertices, FULL geometry — small file,
+# still real coords for the INCOISAdapter parser tests.
+kept = sorted(fs, key=npts)[:3]
 out = {"type": "FeatureCollection",
-       "_note": f"TRIMMED — {len(fs)} features total; [0] full, [1:3] geometry summarised",
+       "_note": f"TRIMMED — {len(fs)} features in the live feed; the 3 smallest kept in full",
        "totalFeatures": d.get("totalFeatures"), "crs": d.get("crs"),
-       "features": [fs[0]] + [strip(f) for f in fs[1:3]]}
-json.dump(out, open(sys.argv[2], "w"), indent=2)
+       "features": kept}
+json.dump(out, open(sys.argv[2], "w"), separators=(",", ":"))  # compact: machine fixture
+open(sys.argv[2], "a").write("\n")
 PY
 else
   echo "  PFZ WFS FAILED (non-blocking)"

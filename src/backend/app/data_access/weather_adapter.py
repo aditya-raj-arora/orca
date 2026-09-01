@@ -51,9 +51,10 @@ def _utcnow() -> datetime:
 
 
 def _rough_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance, km. Local copy for the GDACS proximity gate only
-    — the canonical haversine_km (LLD §4.3, reused by Geofencing) lands with
-    issue #15; this gate does not need that precision."""
+    """Great-circle distance, km. Local copy for the GDACS proximity gate only.
+    The canonical implementation is app.agents.ocean_agent.haversine_km (LLD
+    §4.3, reused by Geofencing); this coarse "is a cyclone near me" check does
+    not warrant a data_access -> agents import."""
     r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = math.radians(lat2 - lat1)
