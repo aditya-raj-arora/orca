@@ -5,11 +5,11 @@ captured"). Regenerate with `scripts/p3_sample_calls.sh` (no credentials needed)
 
 | File | What it is |
 |---|---|
-| `geoserver_wms_layers_and_time.txt` | Layer inventory of INCOIS GeoServer workspace `PFZ-TUNA-SST-CHL` (`sst`, `chl` rasters; no vector/WFS layers) |
+| `pfz_wfs_pfzlines_sample.json` | **PFZ advisory geometry** — first 3 of 96 features from the `PFZ_Automation:pfzlines` WFS→GeoJSON feed (FR-OCEAN-1/3) |
+| `geoserver_wms_layers_and_time.txt` | Layer inventory of INCOIS GeoServer workspace `PFZ-TUNA-SST-CHL` (`sst`, `chl` rasters) |
 | `getfeatureinfo_sst_<loc>.json` | SST at Kochi / Chennai / Kollam via WMS `GetFeatureInfo` (`INFO_FORMAT=application/json`) |
 | `getfeatureinfo_chl_<loc>.json` | Chlorophyll at the same 3 points, same mechanism |
 | `erddap_dataset_list.json` | Full dataset list from `erddap.incois.gov.in` (17 datasets) |
-| `pfz_advisory_text_probe.txt` | Negative result — the per-sector PFZ *text* advisory is not a plain GET |
 
 ## What the samples actually returned (2026-09-01)
 
@@ -30,13 +30,29 @@ already visible and the adapter MUST handle both without fabricating:
   `None`, and flag chlorophyll-via-WMS as **not yet reliable** — see the spike
   doc.
 
+## PFZ advisory geometry (FR-OCEAN-1 / FR-OCEAN-3)
+
+```
+GET https://incois.gov.in/geoserver/PFZ_Automation/ows
+    ?service=WFS&version=1.1.0&request=GetFeature
+    &typeName=PFZ_Automation:pfzlines&outputFormat=application/json
+```
+
+Keyless GeoJSON. 2026-09-01: `FeatureCollection`, 96 `MultiLineString`
+features (advisory boundary lines), coords `[lon,lat]` WGS84, ~1.3 MB.
+Per-feature `Year`+`Julian_day` (`2026`+`243` → 2026-08-31) gives the advisory
+date for `is_stale` (FR-OCEAN-4). Adapter: fetch once/day + cache, then
+haversine the query point to the nearest line. Found via the PfzWebGis app's
+network calls — see `docs/p3-data-source-spike.md` §3.3.
+
 ## Key takeaways (full analysis: `docs/p3-data-source-spike.md`)
 
-- **No INCOIS REST API, no API key.** `INCOIS_BASE_URL` is just a fetch base.
-- **SST + chlorophyll (FR-OCEAN-2): reachable key-free** via GeoServer WMS
-  `GetFeatureInfo` JSON. Usable directly from `INCOISAdapter.fetch()`.
-- **PFZ centroids / advisory geometry (FR-OCEAN-1, FR-OCEAN-3): NOT solved.**
-  No WFS vector layer; the text advisory needs a form POST/date param or an
-  email to INCOIS user services. Open SRS §6.4 item.
+- **No INCOIS REST API, no API key.** Everything is open GeoServer OGC services.
+- **SST + chlorophyll (FR-OCEAN-2): key-free** via GeoServer WMS
+  `GetFeatureInfo` JSON. Watch `GRAY_INDEX` = `-1` / `null` → `None`, never a
+  fabricated value. Chlorophyll came back empty at all 3 points — treat as
+  best-effort / often-`None`.
+- **PFZ advisory geometry (FR-OCEAN-1/3): key-free** via GeoServer WFS
+  `PFZ_Automation:pfzlines` GeoJSON (see above).
 - **ERDDAP** is a clean JSON/CSV griddap API and a good SST/chl fallback, but
   several datasets are archival (QuikSCAT / Oceansat-2) — verify recency.

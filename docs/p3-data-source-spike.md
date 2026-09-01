@@ -24,16 +24,17 @@ Raw captured responses live in [`docs/samples/`](samples/). Reproduce with
 | Active alerts: cyclone / severe weather (FR-WX-2) | **WeatherAPI.com** `forecast.json?...&alerts=yes` (lat/lon native) + **GDACS** GeoRSS for tropical cyclones | WeatherAPI: free key (email, no card); GDACS: none | high — both verified with a live key/feed 2026-09-01 |
 | Data timestamp (FR-WX-3) | every Open-Meteo / WeatherAPI / GDACS payload carries an ISO time field | — | high |
 | SST + chlorophyll (FR-OCEAN-2) | **INCOIS GeoServer WMS `GetFeatureInfo`** (JSON) | none | medium — SST verified, chl came back empty |
-| Nearest PFZ + distance/bearing (FR-OCEAN-1, FR-OCEAN-3) | **unresolved** — no vector feed found yet | none | low — needs §4.2 |
+| Nearest PFZ + distance/bearing (FR-OCEAN-1, FR-OCEAN-3) | **INCOIS GeoServer WFS** `PFZ_Automation:pfzlines` → GeoJSON (advisory lines) | none | high — verified, 96 features, dated |
 | Staleness flag (FR-OCEAN-4) | derive from the layer/advisory publish date | — | medium |
 
-Net: the **weather half is unblocked** — Open-Meteo (forecast + wave) and
-GDACS are keyless; the WeatherAPI.com free key is obtained and its alert
-samples captured. The app runs degraded (no alerts) if the alert sources are
-unreachable, so nothing here blocks issue #10. The **Ocean Agent is partially
-blocked** — SST is fine, but the PFZ geometry that `get_nearest_pfz()` needs
-(LLD §4.3) has no confirmed source yet. The adapter contract (`AdapterResult`,
-LLD §2.9) is unaffected either way, so schema-lock on Day 1 is not at risk.
+Net: **both agents are unblocked.** Weather — Open-Meteo (forecast + wave) and
+GDACS keyless, WeatherAPI.com free key obtained and alert samples captured;
+degraded (no alerts) if alert sources are unreachable. Ocean — SST/chl via
+INCOIS WMS `GetFeatureInfo`, and PFZ advisory geometry via INCOIS WFS
+`PFZ_Automation:pfzlines` GeoJSON (found via the PfzWebGis network calls,
+§3.3). All sources are card-free; only WeatherAPI needs a (free) key. The
+adapter contract (`AdapterResult`, LLD §2.9) is unaffected, so schema-lock on
+Day 1 is not at risk.
 
 ---
 
@@ -153,18 +154,20 @@ WeatherAPI sample needs the key — run
 ## 3. INCOIS — PFZ / oceanographic data
 
 CREDENTIALS.md #4 / SRS §6.4: *"confirm API vs. scraping"*. Answer: **no REST
-API, no key; a mix of OGC web services (WMS) and published bulletins.**
+API, no key — but the PfzWebGis app is backed by open GeoServer OGC services
+(WMS for SST/chl rasters, WFS GeoJSON for the PFZ advisory lines).**
 
 ### 3.1 What exists
 
 | Endpoint | Type | Use for us |
 |---|---|---|
+| `https://incois.gov.in/geoserver/PFZ_Automation/ows` `?…request=GetFeature&typeName=PFZ_Automation:pfzlines&outputFormat=application/json` | GeoServer **WFS → GeoJSON** | **PFZ advisory line geometry** (FR-OCEAN-1/3) — see 3.3 |
 | `https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wms` | GeoServer **WMS** (raster) — layers `sst`, `chl` | **SST/chl values** via `GetFeatureInfo` JSON |
-| `https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wfs` | GeoServer WFS | nothing — **0 vector feature types** in this workspace |
+| `https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wfs` | GeoServer WFS | nothing — 0 vector feature types in *this* workspace |
+| `PFZ_LandingCentres:LandingCenters_29Apr2024`, `PFZ_Sectors:sector_new`, `PFZ_EEZ:indiaeez` (same GeoServer) | WMS/WFS | landing centres (nearest-harbour), sector polygons, India EEZ — handy later; EEZ may help P4 |
 | `https://incois.gov.in/geoserver/ows` (global) | GeoServer | **403** — only per-workspace virtual services are open |
 | `https://erddap.incois.gov.in/erddap/` | **ERDDAP** griddap (JSON/CSV/netCDF) | fallback for SST/chl; 17 datasets, several archival |
-| `https://las.incois.gov.in/` | Live Access Server | ASCAT winds etc. — not needed, Open-Meteo covers wind |
-| `https://incois.gov.in/MarineFisheries/…` | HTML app | daily PFZ advisory — **not a plain GET** (see 3.3) |
+| `https://incois.gov.in/MarineFisheries/PfzWebGis` | HTML app (`DataInfo/MFASPFZ`) | the WebGIS whose network calls revealed the WFS endpoint above |
 
 ### 3.2 SST + chlorophyll (FR-OCEAN-2) — SOLVED, key-free
 
@@ -195,18 +198,44 @@ value at that pixel. Verified 2026-09-01:
   back to ERDDAP `IRS_chlorophyll_datasets`, else treat chl as best-effort /
   often-`None` (allowed — `OceanParams.chlorophyll_mg_m3` is `float | None`).
 
-### 3.3 PFZ centroids / advisory geometry (FR-OCEAN-1, FR-OCEAN-3) — NOT SOLVED
+### 3.3 PFZ advisory geometry (FR-OCEAN-1, FR-OCEAN-3) — SOLVED, key-free
 
-`OceanAgent.get_nearest_pfz()` (LLD §2.4, §4.3) needs a set of **currently
-published PFZ centroids** to run haversine against. Not found yet:
+The PfzWebGis app (`DataInfo/MFASPFZ`) loads the advisory as GeoJSON from:
 
-- No WFS vector layer for PFZ lines/points in the open workspace.
-- `pfz_tuna_chl_sld` is a *styled raster*, not vector geometry.
-- `MarineFisheries/TextData?secid=SEC001..SEC014` → HTTP 302 to a content-less
-  landing page. The advisory needs the right params (date + sub-sector) or a
-  form POST, or is published only as dated PDF bulletins.
+```
+GET https://incois.gov.in/geoserver/PFZ_Automation/ows
+    ?service=WFS&version=1.1.0&request=GetFeature
+    &typeName=PFZ_Automation:pfzlines&outputFormat=application/json
+```
 
-This is the one true open item from SRS §6.4 — see §4.2.
+Verified 2026-09-01: `FeatureCollection`, **96 features**, geometry
+`MultiLineString` (the advisory boundary lines), coords `[lon, lat]` WGS84,
+~1.3 MB. Properties per feature:
+
+| Field | Example | Use |
+|---|---|---|
+| `Category` | `sst` / `ghrsst` | which satellite input produced the line |
+| `Year` + `Julian_day` | `2026` + `"243"` | advisory issue date → **2026-08-31** (all 96 share it — the feed is one day's advisory) → `is_stale` (FR-OCEAN-4) |
+| `UID` | `2026243001.0` | stable id |
+| `SECTORNAME`, `SECTORBOUN` | often blank | coastal sector |
+| `Length` | `31.65` | line length, km |
+
+**Adapter approach (`OceanAgent.get_nearest_pfz`, LLD §4.3):**
+- Fetch `pfzlines` **once per day and cache** (whole feed is 96 features /
+  ~1.3 MB; it changes at most daily — do NOT pull per request; a `bbox=`
+  filter returned 0 in testing, axis-order needs a follow-up but caching
+  makes it moot for NFR-PERF).
+- For each feature, take the nearest point on its MultiLineString to the
+  query location (or the vertex mean as a cheap centroid) and `haversine_km`;
+  the minimum is the nearest PFZ. `bearing_deg` from location to that point.
+- `data_timestamp` = date from `Year`+`Julian_day`; `is_stale` if older than
+  `OCEAN_PFZ_STALENESS_HOURS`.
+- On fetch failure → `AdapterResult(status='unavailable')`; no cached-stale
+  data presented as live (NFR-REL-1) unless explicitly flagged `stale`.
+
+Trimmed sample: `docs/samples/incois/pfz_wfs_pfzlines_sample.json`
+(first 3 of 96). Same GeoServer host as the SST/chl WMS — different workspace
+(`PFZ_Automation`), also unauthenticated.
 
 ### 3.4 Staleness (FR-OCEAN-4)
 
@@ -242,30 +271,29 @@ editing it in a P3 branch.
 5. Later, optional: if IMD's official warning wording is wanted, add a WMO
    Alert Hub CAP reader (`severeweather.wmo.int`) — no IMD account needed.
 
-### 4.2 INCOIS PFZ geometry — needs a decision (blocks part of issue #15)
-Pick one, ideally at the Day-1 sync with P1:
-- **(a)** Inspect `incois.gov.in/MarineFisheries/MarineFisheryAdvisory` in
-  browser devtools → find the real XHR the "PFZ advisory" form fires, and
-  whether it can return coordinates. ~1–2 h. Best outcome if it works.
-- **(b)** Email INCOIS user services (`incois.gov.in` → Contact / User
-  Services) requesting the PFZ advisory feed or daily shapefile/GeoJSON.
-  Do this **today** regardless of (a) — reply latency is the risk (SRS §6.4).
-- **(c)** Fallback for the prototype: parse the daily PFZ **PDF/text bulletin**
-  per coastal sector into `(lat, lon, issued_at)` centroids. Ugly but
-  self-contained; keeps `INCOISAdapter` the only place that knows the format
-  (LLD §2.9), so swapping in (a)/(b) later doesn't touch `OceanAgent`.
-- **(d)** Last resort for demo only: a checked-in snapshot of one day's PFZ
-  centroids as GeoJSON, loaded by the adapter when live fetch fails —
-  **must** be surfaced as `status='stale'`, never presented as live
-  (NFR-REL-1). Flag explicitly to P1/P6, don't let it become silent scope.
+### 4.2 INCOIS PFZ geometry — RESOLVED (was an open item; now §3.3)
+
+Found by inspecting the PfzWebGis app's network calls (browser devtools dig,
+2026-09-01): `PFZ_Automation:pfzlines` WFS → GeoJSON, keyless. Full detail and
+adapter approach in §3.3. Remaining P3 work is implementation, in issue #15:
+
+- `bbox=` filtering returned 0 features in a quick test — confirm axis order
+  (WFS 1.1.0 + EPSG:4326 is lat,lon) or just cache the full daily feed.
+- Decide the "nearest point on a MultiLineString" vs "vertex-mean centroid"
+  approach for `haversine_km` (LLD §4.3 says centroid — a per-line centroid
+  is fine and cheap).
+- Still worth a courtesy email to INCOIS confirming the endpoint is OK to use
+  for a public prototype (attribution: "PFZ advisories © INCOIS").
+- Keep a checked-in one-day GeoJSON snapshot as an offline fallback for demo
+  day, surfaced as `status='stale'`, never as live (NFR-REL-1).
 
 ### 4.3 `.env.example` / `CREDENTIALS.md`
-Updated in this branch: weather block is `WEATHER_FORECAST_BASE_URL` /
-`MARINE_API_BASE_URL` / `WEATHERAPI_BASE_URL` / `WEATHERAPI_KEY` /
-`GDACS_BASE_URL`; `WEATHER_API_KEY` marked retired; IMD noted as evaluated and
-dropped. INCOIS comment records "no key, WMS GetFeatureInfo + bulletin".
-CREDENTIALS.md #3/#4 moved to "in progress". Flip #3 to ✓ once the WeatherAPI
-key + sample land; #4 once §4.2 lands.
+Weather block: `WEATHER_FORECAST_BASE_URL` / `MARINE_API_BASE_URL` /
+`WEATHERAPI_BASE_URL` / `WEATHERAPI_KEY` / `GDACS_BASE_URL`; `WEATHER_API_KEY`
+retired; IMD evaluated and dropped. INCOIS block: `INCOIS_GEOSERVER_URL` (SST/
+chl WMS) + `INCOIS_PFZ_WFS_URL` (PFZ advisory lines) + `OCEAN_PFZ_STALENESS_HOURS`.
+CREDENTIALS.md #3 and #4 → ✓ (WeatherAPI key obtained + samples; INCOIS SST/chl
+and PFZ geometry both confirmed key-free). This closes issue #3.
 
 ---
 
