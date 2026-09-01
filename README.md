@@ -60,7 +60,7 @@ scripts/                Dev/setup scripts
 |---|---|---|---|
 | P1 | Backend / Orchestration Lead | FastAPI Gateway, Planner Agent, session lifecycle, LangGraph wiring | Aditya Raj Arora |
 | P2 | LLM / Synthesis Engineer | Synthesis Agent, entity-extraction prompts, citation check | *unassigned — fill in* |
-| P3 | Weather & Ocean Data Engineer | Weather Agent, Ocean Agent, their adapters | *unassigned — fill in* |
+| P3 | Weather & Ocean Data Engineer | Weather Agent, Ocean Agent, their adapters | Swaraj Rane |
 | P4 | Geospatial & Risk Engineer | Geofencing Agent, Risk/Safety Agent, DB schema | *unassigned — fill in* |
 | P5 | Frontend Engineer (Core UI) | Chat UI, voice I/O, Bhashini client integration | *unassigned — fill in* |
 | P6 | Frontend Engineer (Map/Trace) + QA/Integration Lead | Map panel, trace viewer, E2E tests, deployment | *unassigned — fill in* |
