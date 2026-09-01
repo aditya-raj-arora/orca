@@ -1,0 +1,39 @@
+# CODEOWNERS — auto-request review from the right owner per LLD §2 module boundaries.
+# Replace the placeholder handles below with real GitHub usernames as teammates join.
+# See README.md "Team & ownership" and CONTRIBUTING.md §8 (onboarding).
+
+# P1 — Backend / Orchestration Lead (Aditya Raj Arora) — default owner for anything
+# not covered below, and for shared contracts.
+*                                       @aditya-raj-arora
+
+# P1 — Gateway, Planner, session lifecycle, LangGraph wiring, shared schemas
+/src/backend/app/main.py               @aditya-raj-arora
+/src/backend/app/orchestration/planner_agent.py   @aditya-raj-arora
+/src/backend/app/orchestration/graph.py           @aditya-raj-arora
+/src/backend/app/core/                 @aditya-raj-arora
+/src/backend/app/schemas/              @aditya-raj-arora
+/.github/                              @aditya-raj-arora
+
+# P2 — LLM / Synthesis Engineer
+/src/backend/app/orchestration/synthesis_agent.py  @P2-GITHUB-HANDLE
+
+# P3 — Weather & Ocean Data Engineer
+/src/backend/app/agents/weather_agent.py           @P3-GITHUB-HANDLE
+/src/backend/app/agents/ocean_agent.py             @P3-GITHUB-HANDLE
+/src/backend/app/data_access/weather_adapter.py    @P3-GITHUB-HANDLE
+/src/backend/app/data_access/incois_adapter.py     @P3-GITHUB-HANDLE
+
+# P4 — Geospatial & Risk Engineer
+/src/backend/app/agents/geofencing_agent.py        @P4-GITHUB-HANDLE
+/src/backend/app/agents/risk_safety_agent.py       @P4-GITHUB-HANDLE
+/src/backend/app/data_access/gis_boundary_adapter.py  @P4-GITHUB-HANDLE
+/src/backend/app/db/                               @P4-GITHUB-HANDLE
+
+# P5 — Frontend Engineer (Core UI)
+/src/frontend/src/components/Chat/     @P5-GITHUB-HANDLE
+/src/frontend/src/api/                 @P5-GITHUB-HANDLE
+
+# P6 — Frontend Engineer (Map/Trace) + QA/Integration Lead
+/src/frontend/src/components/Map/      @P6-GITHUB-HANDLE
+/src/frontend/src/components/TraceViewer/  @P6-GITHUB-HANDLE
+/docker-compose.yml                    @P6-GITHUB-HANDLE

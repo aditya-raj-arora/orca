@@ -1,0 +1,43 @@
+# Backend CI — runs on every PR/push touching src/backend.
+# Owner: P1 (Backend/Orchestration Lead), maintained jointly with P6 (QA/Integration Lead).
+name: backend-ci
+
+on:
+  pull_request:
+    paths:
+      - "src/backend/**"
+      - ".github/workflows/backend-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/backend/**"
+
+defaults:
+  run:
+    working-directory: src/backend
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: src/backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest)
+        run: pytest --maxfail=1 -q
+
+      # TODO(P1/P6): once app/db is implemented, add a postgis service
+      # container here (image: postgis/postgis:16-3.4) and run schema.sql
+      # against it for a real integration test pass, rather than mocking DB
+      # access in unit tests only.

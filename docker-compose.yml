@@ -1,0 +1,45 @@
+# Single-application deployment per HLD §7 (Deployment Architecture).
+# TODO(P6 - QA/Integration Lead): harden this for demo deployment (HLD §7.1 notes a
+# single environment is assumed for the prototype phase). Add healthchecks and a
+# frontend static-serve stage before Day 6 hardening (Chat Summary §3, Day 6 row).
+
+version: "3.9"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orca
+      POSTGRES_PASSWORD: orca
+      POSTGRES_DB: orca
+    ports:
+      - "5432:5432"
+    volumes:
+      - orca_db_data:/var/lib/postgresql/data
+      - ./src/backend/app/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+
+  backend:
+    build:
+      context: ./src/backend
+    restart: unless-stopped
+    env_file:
+      - ./src/backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://orca:orca@db:5432/orca
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+  frontend:
+    build:
+      context: ./src/frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  orca_db_data:

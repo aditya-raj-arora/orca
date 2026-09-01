@@ -1,0 +1,34 @@
+# Enforces CONTRIBUTING.md §1 "everything traces to a requirement": every PR
+# must reference a Requirement ID (FR-xxx / NFR-xxx) or an explicit design
+# section (LLD §x / HLD §x) somewhere in its title or body.
+#
+# Owner: P1 (Backend/Orchestration Lead), original author of this check.
+# This is deliberately a soft, fast regex check, not a hard content review —
+# it exists to catch the *absence* of any traceability tag, not to judge
+# whether the tag chosen is the right one (that's the reviewer's job).
+name: traceability-check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check-requirement-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR references a requirement or design section
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || "";
+            const body = context.payload.pull_request.body || "";
+            const text = `${title}\n${body}`;
+            const pattern = /\b(F|NF)R-[A-Z]+-\d+\b|\bLLD\s*§|\bHLD\s*§|\bSRS\s*§/i;
+            if (!pattern.test(text)) {
+              core.setFailed(
+                "This PR doesn't reference a Requirement ID (e.g. FR-WX-1, " +
+                "NFR-SEC-2) or a design section (LLD §2.6, HLD §3) in its " +
+                "title or description. See CONTRIBUTING.md §1 — every change " +
+                "must trace back to a requirement. Add the tag and re-run."
+              );
+            }
