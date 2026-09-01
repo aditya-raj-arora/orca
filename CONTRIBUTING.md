@@ -111,7 +111,7 @@ task list.
 2. Replace the matching `*unassigned — fill in*` row in `README.md`'s ownership table
    with their name.
 3. Replace the matching placeholder GitHub handle in `CODEOWNERS`.
-4. Point them at: `docs/ORCA_SRS_v1.1.docx` → `docs/ORCA_HLD_v1.0.docx` →
+4. Point them at: `docs/ORCA_SRS_v1.1.docx` → `docs/ORCA_HLD_v1.1.docx` →
    `docs/ORCA_LLD_v1.0.docx` (in that order) → their module's `TODO` comments in
    `src/`.
 

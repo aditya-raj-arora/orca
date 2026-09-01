@@ -11,7 +11,7 @@ labels: ""
 
 ## Design reference
 
-<!-- Required. e.g. LLD §2.3 (Weather Agent). See docs/ORCA_LLD_v1.0.docx / ORCA_HLD_v1.0.docx. -->
+<!-- Required. e.g. LLD §2.3 (Weather Agent). See docs/ORCA_LLD_v1.0.docx / ORCA_HLD_v1.1.docx. -->
 
 ## Owner
 

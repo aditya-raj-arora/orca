@@ -21,7 +21,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://orca:orca@localhost:5432/orca"
 
-    llm_provider: str = "anthropic"
+    # google | groq | anthropic | openai — google is default: no paid
+    # subscription needed. See docs/CREDENTIALS.md #1.
+    llm_provider: str = "google"
     llm_api_key: str = ""
 
     bhashini_api_key: str = ""

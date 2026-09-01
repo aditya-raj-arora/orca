@@ -43,8 +43,10 @@ services:
       # Secrets — fill in via the Render dashboard, never commit real values
       # (NFR-SEC-2). sync:false means Render prompts for these on first
       # deploy and does not track them in this file.
+      # Google Gemini (free tier, no card required) — see HLD v1.1 §6 and
+      # docs/CREDENTIALS.md #1 for why, and where LLM_API_KEY comes from.
       - key: LLM_PROVIDER
-        value: anthropic
+        value: google
       - key: LLM_API_KEY
         sync: false
       - key: BHASHINI_API_KEY

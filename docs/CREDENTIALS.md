@@ -23,15 +23,25 @@ committed) locally, and in the Render dashboard for deployment (see
 Powers `PlannerAgent.extract_entities()` and `SynthesisAgent.compose()`
 (LLD §2.2, §2.7). `LLM_PROVIDER` in `.env` picks which of these you're using.
 
-- **Anthropic (Claude)**: console.anthropic.com → Settings → API Keys →
-  Create Key. Needs a billing method on file (pay-as-you-go); check current
-  rate limits under Settings → Limits before demo day.
-- **OpenAI (GPT)**: platform.openai.com → API keys → Create new secret key.
-  Same billing caveat.
+**Default: Google Gemini** (via Google AI Studio) — chosen specifically because
+**no team member has a paid LLM subscription**, and Gemini's free tier needs
+no card on file (HLD v1.1 §6 records this as the reason for the deviation from
+the original Claude/GPT assumption in HLD v1.0).
 
-Either works with the function-calling/tool-use pattern the LLD assumes — pick
-one and confirm it against a real call (a plain "hello" completion is enough
-for Day 1) before building the extraction prompt on top of it.
+- Go to **aistudio.google.com/apikey** → sign in with a Google account →
+  Create API key. That's it — no billing setup, no approval wait.
+- Supports the function-calling/tool-use pattern the LLD assumes.
+- Free-tier rate limits are generous enough for dev + a live demo at this
+  project's scale (SRS §5.5); if they get tight during rehearsal, switch to
+  the backup below rather than adding a paid plan under time pressure.
+
+**Backup: Groq** — also free, no card, and notably fast (useful headroom
+against NFR-PERF-1/2's 8s/15s budgets). Get a key at **console.groq.com** →
+API Keys. Runs open models (Llama 3.x) with tool-calling support. Set
+`LLM_PROVIDER=groq` to switch.
+
+(Anthropic/OpenAI remain supported in `LLM_PROVIDER` for anyone who does have
+a paid key later, but aren't the default for this team.)
 
 ## 2. Bhashini — ASR / TTS / Language ID
 
