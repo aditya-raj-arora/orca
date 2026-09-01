@@ -1,16 +1,22 @@
-# Backend CI — runs on every PR/push touching src/backend.
+# Backend CI — runs on EVERY PR/push, regardless of what changed.
 # Owner: P1 (Backend/Orchestration Lead), maintained jointly with P6 (QA/Integration Lead).
+#
+# Deliberately NOT path-filtered: this job (lint-and-test) is a required
+# status check in branch protection. A path filter here means a PR that
+# doesn't touch src/backend never gets this check to report at all, which
+# GitHub treats as permanently pending rather than passing — branch
+# protection then blocks the merge forever (discovered via PR #19, a
+# backend-only change that got stuck on frontend-ci's required check never
+# running). Path filters and "required status check" don't mix safely
+# unless every required check is guaranteed to run on every PR — so this
+# workflow now always runs. ~30s of CI time is a fine trade for a merge
+# queue that isn't permanently stuck.
 name: backend-ci
 
 on:
   pull_request:
-    paths:
-      - "src/backend/**"
-      - ".github/workflows/backend-ci.yml"
   push:
     branches: [main]
-    paths:
-      - "src/backend/**"
 
 defaults:
   run:
