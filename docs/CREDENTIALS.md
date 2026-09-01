@@ -10,8 +10,8 @@ committed) locally, and in the Render dashboard for deployment (see
 |---|---|---|---|
 | 1 | `LLM_API_KEY` | P2 | ☐ |
 | 2 | `BHASHINI_API_KEY` / `BHASHINI_USER_ID` | P2 | ☐ |
-| 3 | `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` | P3 | ◑ method confirmed (OpenWeather One Call 3.0 + Open-Meteo Marine) — key still to be created. See `docs/p3-data-source-spike.md` §2 |
-| 4 | `INCOIS_BASE_URL` (access method) | P3 | ◑ no API/key; SST+chl via GeoServer WMS confirmed & sampled; PFZ geometry source still open. See `docs/p3-data-source-spike.md` §3–4 |
+| 3 | `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` | P3 | ☐ |
+| 4 | `INCOIS_BASE_URL` (access method) | P3 | ☐ |
 | 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ☐ |
 | 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); ☐ for prod (Supabase, see below) |
 | 7 | `RENDER_DEPLOY_HOOK_BACKEND` / `_FRONTEND` | P6 | ☐ (after Render setup) |
@@ -81,14 +81,6 @@ Either is fine per HLD — the Data Access Layer isolates the choice from the
 rest of the system (LLD §2.9 design note). No signup approval delay expected
 with OpenWeather; IMD may need more digging into exact bulletin URLs.
 
-> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §2):** going with
-> **OpenWeather One Call API 3.0** (`WEATHER_API_BASE_URL=https://api.openweathermap.org/data/3.0`)
-> for wind / precipitation / visibility / government alerts, **plus Open-Meteo
-> Marine API** (`https://marine-api.open-meteo.com/v1`, no key) for wave
-> height — OpenWeather's free tier has no sea-state field. P3 still needs to
-> create the free OpenWeather key and subscribe to "One Call API 3.0", then
-> run `scripts/p3_sample_calls.sh` to capture the sample.
-
 ## 4. INCOIS — Potential Fishing Zone / oceanographic data
 
 Powers `INCOISAdapter` (LLD §2.9). **This is the SRS §6.4 item explicitly
@@ -103,22 +95,6 @@ flagged as "confirm API vs. scraping"** — do this before writing
   sample retrieval before Sprint 1 starts (SRS §6.5 Sprint 0 exit criteria).
 - No API key needed if it's public bulletin data — `INCOIS_BASE_URL` is just
   the base URL you're fetching from.
-
-> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §3):**
-> - **No REST API and no key.** Access is via OGC web services + bulletins.
-> - **SST + chlorophyll (FR-OCEAN-2): confirmed & sampled** — GeoServer WMS
->   `GetFeatureInfo` with `INFO_FORMAT=application/json` against
->   `https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wms` (layers `sst`,
->   `chl`). Real SST values captured for Kochi/Kollam; watch the `GRAY_INDEX
->   = -1` / `null` no-data sentinels → must become `None`, never a guess.
->   Samples in `docs/samples/incois/`.
-> - **PFZ centroids / advisory geometry (FR-OCEAN-1/3): still open** — no
->   vector (WFS) layer; the text advisory isn't a plain GET. Options (browser
->   devtools dig / email INCOIS / parse the PDF bulletin) are in the spike
->   doc §4.2. **Emailing INCOIS user services should happen today** — reply
->   latency is the risk.
-> - ERDDAP (`erddap.incois.gov.in`) is a clean JSON/CSV fallback for SST/chl;
->   some datasets are archival, verify recency.
 
 ## 5. GIS boundary data — IMBL and MPA
 
