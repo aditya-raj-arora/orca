@@ -1,0 +1,60 @@
+{
+  "location": {
+    "name": "Kollam",
+    "region": "Kerala",
+    "country": "India",
+    "lat": 8.881,
+    "lon": 76.592,
+    "tz_id": "Asia/Kolkata",
+    "localtime_epoch": 1788259472,
+    "localtime": "2026-09-01 16:14"
+  },
+  "current": {
+    "last_updated_epoch": 1788258600,
+    "last_updated": "2026-09-01 16:00",
+    "temp_c": 26.6,
+    "temp_f": 79.9,
+    "is_day": 1,
+    "condition": {
+      "text": "Sunny",
+      "icon": "//cdn.weatherapi.com/weather/64x64/day/113.png",
+      "code": 1000
+    },
+    "wind_mph": 15.2,
+    "wind_kph": 24.5,
+    "wind_degree": 310,
+    "wind_dir": "NW",
+    "pressure_mb": 1011.0,
+    "pressure_in": 29.85,
+    "precip_mm": 0.0,
+    "precip_in": 0.0,
+    "humidity": 83,
+    "cloud": 0,
+    "feelslike_c": 28.8,
+    "feelslike_f": 83.8,
+    "windchill_c": 26.6,
+    "windchill_f": 79.9,
+    "heatindex_c": 29.9,
+    "heatindex_f": 85.8,
+    "dewpoint_c": 23.5,
+    "dewpoint_f": 74.3,
+    "vis_km": 10.0,
+    "vis_miles": 6.0,
+    "uv": 2.1,
+    "gust_mph": 20.6,
+    "gust_kph": 33.2,
+    "will_it_rain": 0,
+    "chance_of_rain": 10,
+    "will_it_snow": 0,
+    "chance_of_snow": 0,
+    "wetbulb_c": 24.4,
+    "wetbulb_f": 75.8,
+    "short_rad": 804.34,
+    "diff_rad": 184.04,
+    "dni": 0.0,
+    "gti": 0.0
+  },
+  "alerts": {
+    "alert": []
+  }
+}

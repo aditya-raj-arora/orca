@@ -10,7 +10,7 @@ committed) locally, and in the Render dashboard for deployment (see
 |---|---|---|---|
 | 1 | `LLM_API_KEY` | P2 | ☐ |
 | 2 | `BHASHINI_API_KEY` / `BHASHINI_USER_ID` | P2 | ☐ |
-| 3 | Weather: `WEATHER_FORECAST_BASE_URL`, `MARINE_API_BASE_URL` (Open-Meteo, no key) + `IMD_API_KEY` (alerts) | P3 | ◑ forecast+wave keyless & verified; only `IMD_API_KEY` (free, no card, `api.imd.gov.in/register.php`) still to get. See `docs/p3-data-source-spike.md` §2 |
+| 3 | Weather: `WEATHER_FORECAST_BASE_URL` / `MARINE_API_BASE_URL` / `GDACS_BASE_URL` (no key) + `WEATHERAPI_KEY` (alerts) | P3 | ◑ forecast+wave+GDACS keyless & verified; only `WEATHERAPI_KEY` (free, email signup, no card — `weatherapi.com/signup.aspx`) still to get. See `docs/p3-data-source-spike.md` §2 |
 | 4 | `INCOIS_BASE_URL` (access method) | P3 | ◑ no API/key; SST+chl via GeoServer WMS confirmed & sampled; PFZ geometry source still open. See `docs/p3-data-source-spike.md` §3–4 |
 | 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ☐ |
 | 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); ☐ for prod (Supabase, see below) |
@@ -73,23 +73,27 @@ so this can still change without touching any agent.
 Historical options considered:
 - **OpenWeather** (`openweathermap.org/api`) — dropped: One Call 3.0/4.0
   require the paid *"One Call by Call"* plan (card on file).
-- **IMD** (`api.imd.gov.in`) — kept, for official warnings (FR-WX-2).
-- **Open-Meteo** (`open-meteo.com`) — added, for keyless forecast + wave data.
+- **IMD** (`api.imd.gov.in`) — evaluated, then dropped: access needs ID proof
+  + an institute permission letter + manual review (spike §2).
+- **Open-Meteo** (`open-meteo.com`) — forecast + wave, keyless.
+- **WeatherAPI.com** + **GDACS** — alerts (FR-WX-2).
 
-> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §2):** OpenWeather
-> was **dropped** — One Call 3.0/4.0 both need the paid *"One Call by Call"*
-> subscription (card on file even for the free 1k/day tier), the same
-> constraint that moved the LLM choice to Gemini. Replaced with a card-free
-> stack:
+> **Spike outcome (2026-09-01, `docs/p3-data-source-spike.md` §2):** card-free,
+> mostly keyless stack:
 > - **Open-Meteo Forecast API** (`WEATHER_FORECAST_BASE_URL=https://api.open-meteo.com/v1`)
 >   — wind / precipitation / visibility. **No key, no signup.** Verified.
 > - **Open-Meteo Marine API** (`MARINE_API_BASE_URL=https://marine-api.open-meteo.com/v1`)
 >   — wave height. **No key.** Verified.
-> - **IMD API** (`IMD_API_BASE_URL=https://api.imd.gov.in/api/v1`) — cyclone /
->   district & subdivision warnings / nowcast / coastal bulletins for FR-WX-2.
->   Free, no card, **but needs `IMD_API_KEY`** from a free account at
->   `api.imd.gov.in/register.php` (every endpoint 401s without it). This is
->   the only weather credential to obtain, and only alerts depend on it.
+> - **WeatherAPI.com** (`WEATHERAPI_BASE_URL=https://api.weatherapi.com/v1`) —
+>   `forecast.json?...&alerts=yes` for government severe-weather / cyclone
+>   alerts (FR-WX-2), lat/lon native. **Free key, email signup, no card, no
+>   documents, instant** — `weatherapi.com/signup.aspx`. Only the alerts leg
+>   depends on it; the app runs degraded without it.
+> - **GDACS GeoRSS** (`GDACS_BASE_URL=https://www.gdacs.org/xml`) — tropical
+>   cyclones over the North Indian Ocean. **No key.** Verified.
+> - IMD stays available as a later add via the **WMO Alert Hub**
+>   (`severeweather.wmo.int`), which re-publishes IMD CAP warnings with no IMD
+>   account.
 
 ## 4. INCOIS — Potential Fishing Zone / oceanographic data
 

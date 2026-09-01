@@ -1,0 +1,60 @@
+{
+  "location": {
+    "name": "Periamet",
+    "region": "Tamil Nadu",
+    "country": "India",
+    "lat": 13.082,
+    "lon": 80.266,
+    "tz_id": "Asia/Kolkata",
+    "localtime_epoch": 1788259472,
+    "localtime": "2026-09-01 16:14"
+  },
+  "current": {
+    "last_updated_epoch": 1788258600,
+    "last_updated": "2026-09-01 16:00",
+    "temp_c": 29.8,
+    "temp_f": 85.6,
+    "is_day": 1,
+    "condition": {
+      "text": "Overcast",
+      "icon": "//cdn.weatherapi.com/weather/64x64/day/122.png",
+      "code": 1009
+    },
+    "wind_mph": 13.4,
+    "wind_kph": 21.6,
+    "wind_degree": 143,
+    "wind_dir": "SE",
+    "pressure_mb": 1006.0,
+    "pressure_in": 29.71,
+    "precip_mm": 0.0,
+    "precip_in": 0.0,
+    "humidity": 70,
+    "cloud": 100,
+    "feelslike_c": 34.5,
+    "feelslike_f": 94.1,
+    "windchill_c": 29.8,
+    "windchill_f": 85.6,
+    "heatindex_c": 34.5,
+    "heatindex_f": 94.1,
+    "dewpoint_c": 23.7,
+    "dewpoint_f": 74.7,
+    "vis_km": 10.0,
+    "vis_miles": 6.0,
+    "uv": 0.5,
+    "gust_mph": 15.9,
+    "gust_kph": 25.6,
+    "will_it_rain": 0,
+    "chance_of_rain": 18,
+    "will_it_snow": 0,
+    "chance_of_snow": 0,
+    "wetbulb_c": 25.3,
+    "wetbulb_f": 77.6,
+    "short_rad": 567.22,
+    "diff_rad": 128.68,
+    "dni": 0.0,
+    "gti": 0.0
+  },
+  "alerts": {
+    "alert": []
+  }
+}
