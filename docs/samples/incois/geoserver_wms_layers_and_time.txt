@@ -1,0 +1,14 @@
+INCOIS GeoServer WMS — workspace PFZ-TUNA-SST-CHL
+Endpoint : https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wms
+Also WFS : https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL/wfs  (0 vector feature types — rasters only)
+Fetched  : 2026-09-01  (WMS 1.3.0 GetCapabilities)
+
+Layer <Name> values:
+  - WMS
+  - chl
+  - pfz_tuna_chl_sld
+  - sst
+  - PFZ-TUNA-CHL-SST
+
+time dimension extents advertised:
+  (none parsed here — query GetCapabilities directly for TIME=)
