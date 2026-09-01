@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from math import asin, atan2, cos, degrees, radians, sin, sqrt
+from typing import Any
 
+from app.agents._location import as_latlon
 from app.core.config import get_settings
 from app.data_access.incois_adapter import INCOISAdapter
 from app.schemas.common import LatLon
@@ -52,26 +54,33 @@ class OceanAgent:
         self._adapter = adapter
         self._staleness_hours = get_settings().ocean_pfz_staleness_hours
 
-    def get_nearest_pfz(self, location: LatLon) -> PFZResult | None:
+    def get_nearest_pfz(self, location: LatLon | dict[str, Any]) -> PFZResult | None:
         """Nearest currently-published PFZ advisory line to `location`.
 
-        Deviates from the LLD §2.4 signature (`-> PFZResult`) by returning
-        None when INCOIS is unreachable or no advisory is published — the
-        orchestration graph already treats a None ocean result as
-        'unavailable' (graph._ocean_node, `unavailable=None`), and PFZResult
-        has no status field. No fabricated PFZ on failure (NFR-REL-1)."""
+        `location` is a LatLon per LLD §2.4, but a plain {"lat","lon"} dict is
+        also accepted while graph._location_for()'s TODO(P1) conversion is
+        pending. Deviates from the LLD signature (`-> PFZResult`) by returning
+        None when INCOIS is unreachable, no advisory is published, or the
+        location is unusable — the graph already treats a None ocean result as
+        'unavailable' (graph._ocean_node, `unavailable=None`) and PFZResult has
+        no status field. No fabricated PFZ on failure (NFR-REL-1)."""
+        loc = as_latlon(location)
+        if loc is None:
+            logger.info("OceanAgent: no usable location in %r", location)
+            return None
+
         result = self._adapter.fetch({"kind": "pfz"})
         pfz = (result.data or {}).get("pfz") or []
         if result.status == "unavailable" or not pfz:
-            logger.info("OceanAgent: no PFZ data for (%s, %s)", location.lat, location.lon)
+            logger.info("OceanAgent: no PFZ data for (%s, %s)", loc.lat, loc.lon)
             return None
 
         nearest = min(
             pfz,
-            key=lambda p: haversine_km(location.lat, location.lon, p["lat"], p["lon"]),
+            key=lambda p: haversine_km(loc.lat, loc.lon, p["lat"], p["lon"]),
         )
-        dist = haversine_km(location.lat, location.lon, nearest["lat"], nearest["lon"])
-        brg = bearing_deg(location.lat, location.lon, nearest["lat"], nearest["lon"])
+        dist = haversine_km(loc.lat, loc.lon, nearest["lat"], nearest["lon"])
+        brg = bearing_deg(loc.lat, loc.lon, nearest["lat"], nearest["lon"])
 
         advisory_ts = _parse_dt((result.data or {}).get("advisory_date"))
         return PFZResult(
@@ -82,13 +91,17 @@ class OceanAgent:
             is_stale=self._is_stale(advisory_ts, result.status),  # FR-OCEAN-4
         )
 
-    def get_ocean_parameters(self, location: LatLon) -> OceanParams:
+    def get_ocean_parameters(self, location: LatLon | dict[str, Any]) -> OceanParams:
         """SST + chlorophyll where INCOIS publishes them (FR-OCEAN-2).
 
         Always returns an OceanParams; unpublished / unavailable fields are
-        None, never a fabricated or interpolated value."""
+        None, never a fabricated or interpolated value. Accepts a LatLon or a
+        {"lat","lon"} dict (see get_nearest_pfz)."""
+        loc = as_latlon(location)
+        if loc is None:
+            return OceanParams(sea_surface_temp_c=None, chlorophyll_mg_m3=None)
         result = self._adapter.fetch(
-            {"kind": "ocean_params", "lat": location.lat, "lon": location.lon}
+            {"kind": "ocean_params", "lat": loc.lat, "lon": loc.lon}
         )
         data = result.data or {}
         if result.status == "unavailable":

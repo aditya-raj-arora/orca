@@ -234,6 +234,25 @@ def test_data_timestamp_falls_back_to_fetched_at_when_no_advisory_date() -> None
     assert r.data_timestamp == res.fetched_at
 
 
+def test_get_nearest_pfz_accepts_plain_dict_location() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result()))
+    r = agent.get_nearest_pfz({"place_name": "Chennai", "lat": 13.08, "lon": 80.27})
+    assert r is not None
+    assert (r.centroid.lat, r.centroid.lon) == (13.4287, 80.6392)
+
+
+@pytest.mark.parametrize("bad", [{}, {"lat": None, "lon": None}, None])
+def test_get_nearest_pfz_none_for_unusable_location(bad: object) -> None:
+    assert OceanAgent(_FakeAdapter(_pfz_result())).get_nearest_pfz(bad) is None
+
+
+def test_get_ocean_parameters_accepts_dict_and_handles_bad_location() -> None:
+    agent = OceanAgent(_FakeAdapter(_params_result(29.6, None)))
+    assert agent.get_ocean_parameters({"lat": 9.93, "lon": 76.26}).sea_surface_temp_c == 29.6
+    p = agent.get_ocean_parameters({})
+    assert p.sea_surface_temp_c is None and p.chlorophyll_mg_m3 is None
+
+
 # --------------------------------------------------------------------------- #
 # OceanAgent.get_ocean_parameters — no fabrication (FR-OCEAN-2)
 # --------------------------------------------------------------------------- #

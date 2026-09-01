@@ -130,6 +130,20 @@ def test_returns_weatherresult_for_three_locations(loc: LatLon) -> None:
     assert r.data_timestamp is not None
 
 
+def test_accepts_plain_dict_location_from_the_graph() -> None:
+    fake = _FakeAdapter(_ok(_ok_data()))
+    r = WeatherAgent(fake).get_conditions({"place_name": "Kochi", "lat": 9.93, "lon": 76.26})
+    assert r.status == "ok"
+    assert fake.calls[0]["lat"] == 9.93 and fake.calls[0]["lon"] == 76.26
+
+
+@pytest.mark.parametrize("bad", [{}, {"lat": None, "lon": None}, {"lat": "x", "lon": 1}, None])
+def test_unusable_location_is_unavailable_not_raise(bad: object) -> None:
+    r = WeatherAgent(_FakeAdapter(_ok(_ok_data()))).get_conditions(bad)
+    assert r.status == "unavailable"
+    assert r.wind_speed_kmh == 0.0
+
+
 # --------------------------------------------------------------------------- #
 # WeatherDataAdapter — pure helpers against captured samples
 # --------------------------------------------------------------------------- #

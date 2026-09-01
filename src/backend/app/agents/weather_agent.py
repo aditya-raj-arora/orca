@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
+from app.agents._location import as_latlon
 from app.data_access.weather_adapter import WeatherDataAdapter
 from app.schemas.common import LatLon, TimeWindow
 from app.schemas.weather import WeatherResult
@@ -40,24 +42,27 @@ class WeatherAgent:
         self._adapter = adapter
 
     def get_conditions(
-        self, location: LatLon, window: TimeWindow | None = None
+        self, location: LatLon | dict[str, Any], window: TimeWindow | None = None
     ) -> WeatherResult:
         """Current wind / wave conditions and any active alerts for a location.
 
-        `window` is accepted (the graph passes it through from the Planner) but
-        not yet used — current conditions + active alerts cover FR-WX-1/2;
-        forecast-range selection is a later sprint. Never raises: any adapter
-        failure becomes status='unavailable' (FR-WX-4)."""
+        `location` is a LatLon per LLD §2.3, but a plain {"lat","lon"} dict is
+        also accepted while graph._location_for()'s TODO(P1) conversion is
+        pending. `window` is accepted (the graph passes it through from the
+        Planner) but not yet used — current conditions + active alerts cover
+        FR-WX-1/2; forecast-range selection is a later sprint. Never raises:
+        any adapter failure becomes status='unavailable' (FR-WX-4)."""
+        loc = as_latlon(location)
+        if loc is None:
+            logger.info("WeatherAgent: no usable location in %r", location)
+            return _unavailable()
+
         result = self._adapter.fetch(
-            {"lat": location.lat, "lon": location.lon, "window": window}
+            {"lat": loc.lat, "lon": loc.lon, "window": window}
         )
 
         if result.status != "ok" or result.data is None:
-            logger.info(
-                "WeatherAgent: adapter unavailable for (%s, %s)",
-                location.lat,
-                location.lon,
-            )
+            logger.info("WeatherAgent: adapter unavailable for (%s, %s)", loc.lat, loc.lon)
             return _unavailable()
 
         data = result.data
