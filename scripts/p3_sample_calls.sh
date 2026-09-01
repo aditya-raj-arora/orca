@@ -83,7 +83,37 @@ gfi sst "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 gfi chl "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 
 # ---------------------------------------------------------------------------
-# 3. INCOIS — ERDDAP dataset list (fallback data path for SST/chl)
+# 3. INCOIS — PFZ advisory geometry via GeoServer WFS -> GeoJSON, NO key.
+#    typeName PFZ_Automation:pfzlines. Full feed ~1.3 MB / ~96 MultiLineString
+#    features; we keep a trimmed 3-feature sample. FR-OCEAN-1 / FR-OCEAN-3.
+# ---------------------------------------------------------------------------
+say "INCOIS PFZ advisory lines (WFS -> GeoJSON)"
+_pfz="$(mktemp)"
+if curl -fsS -m 60 \
+  "https://incois.gov.in/geoserver/PFZ_Automation/ows?service=WFS&version=1.1.0&request=GetFeature&typeName=PFZ_Automation:pfzlines&outputFormat=application/json" \
+  -o "$_pfz" \
+  -w "HTTP %{http_code}  %{size_download} bytes (trimmed to 3 features -> pfz_wfs_pfzlines_sample.json)\n"; then
+  python3 - "$_pfz" "$OUT_INCOIS/pfz_wfs_pfzlines_sample.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); fs = d["features"]
+def strip(f):  # keep properties + a geometry summary, drop the vertex list
+    g = f["geometry"]; npts = sum(len(l) for l in g["coordinates"])
+    return {"type": "Feature", "properties": f["properties"],
+            "geometry": {"type": g["type"], "_vertices": npts,
+                         "_first_coord": g["coordinates"][0][0]}}
+out = {"type": "FeatureCollection",
+       "_note": f"TRIMMED — {len(fs)} features total; [0] full, [1:3] geometry summarised",
+       "totalFeatures": d.get("totalFeatures"), "crs": d.get("crs"),
+       "features": [fs[0]] + [strip(f) for f in fs[1:3]]}
+json.dump(out, open(sys.argv[2], "w"), indent=2)
+PY
+else
+  echo "  PFZ WFS FAILED (non-blocking)"
+fi
+rm -f "$_pfz"
+
+# ---------------------------------------------------------------------------
+# 3b. INCOIS — ERDDAP dataset list (fallback data path for SST/chl)
 # ---------------------------------------------------------------------------
 say "INCOIS ERDDAP dataset list"
 curl -fsS -m 45 \
