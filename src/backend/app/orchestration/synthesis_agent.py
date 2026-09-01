@@ -13,7 +13,6 @@ mode this system can have.
 """
 from __future__ import annotations
 
-from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ComposedResponse, ExecutionPlan
 
 
@@ -21,7 +20,8 @@ class SynthesisAgent:
     def compose(
         self,
         plan: ExecutionPlan,
-        results: dict[str, object],  # agent_name -> WeatherResult|PFZResult|GeofenceResult|RiskVerdict
+        # agent_name -> WeatherResult | PFZResult | GeofenceResult | RiskVerdict
+        results: dict[str, object],
         language: str,
     ) -> ComposedResponse:
         """

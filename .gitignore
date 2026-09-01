@@ -17,6 +17,7 @@ dist/
 build/
 .vite/
 *.local
+*.tsbuildinfo
 
 # --- Editors / OS ---
 .vscode/
