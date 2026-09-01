@@ -63,7 +63,7 @@ scripts/                Dev/setup scripts
 | P1 | Backend / Orchestration Lead | FastAPI Gateway, Planner Agent, session lifecycle, LangGraph wiring | Aditya Raj Arora ([@aditya-raj-arora](https://github.com/aditya-raj-arora)) |
 | P2 | LLM / Synthesis Engineer | Synthesis Agent, entity-extraction prompts, citation check | [@Deep-R28](https://github.com/Deep-R28) |
 | P3 | Weather & Ocean Data Engineer | Weather Agent, Ocean Agent, their adapters | Swaraj Rane ([@ArmouredOre](https://github.com/ArmouredOre)) |
-| P4 | Geospatial & Risk Engineer | Geofencing Agent, Risk/Safety Agent, DB schema | [@m123ukta](https://github.com/m123ukta) *(invite pending)* |
+| P4 | Geospatial & Risk Engineer | Geofencing Agent, Risk/Safety Agent, DB schema | [@m123ukta](https://github.com/m123ukta) |
 | P5 | Frontend Engineer (Core UI) | Chat UI, voice I/O, Bhashini client integration | [@armoredglock](https://github.com/armoredglock) |
 | P6 | Frontend Engineer (Map/Trace) + QA/Integration Lead | Map panel, trace viewer, E2E tests, deployment | *yet to join — fill in* |
 
