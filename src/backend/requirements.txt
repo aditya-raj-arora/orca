@@ -5,8 +5,11 @@ pydantic>=2.8
 pydantic-settings>=2.4
 websockets>=13.0
 
-# Orchestration
-langgraph>=0.2
+# Orchestration — pinned >=1.2 to match the version orchestration/graph.py's
+# fan-out/fan-in state-merge reducers were actually built and tested against
+# (verified end-to-end with fake agents in tests/test_graph.py); the >=0.2
+# API surface differs enough that an old resolve could silently break this.
+langgraph>=1.2
 
 # LLM (owner P2 — default is Google Gemini, free tier, no paid subscription
 # needed; see docs/CREDENTIALS.md #1. Groq is the documented backup. Keep all

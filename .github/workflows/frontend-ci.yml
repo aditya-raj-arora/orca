@@ -1,16 +1,17 @@
-# Frontend CI — runs on every PR/push touching src/frontend.
+# Frontend CI — runs on EVERY PR/push, regardless of what changed.
 # Owner: P6 (Frontend Engineer, Map/Trace + QA/Integration Lead).
+#
+# Deliberately NOT path-filtered — see backend-ci.yml's comment for why:
+# lint-build-test is a required branch-protection status check, and a path
+# filter means it silently never reports (permanently "pending", not
+# "passing") on a PR that doesn't touch src/frontend, which blocks merge
+# forever. Discovered via PR #19.
 name: frontend-ci
 
 on:
   pull_request:
-    paths:
-      - "src/frontend/**"
-      - ".github/workflows/frontend-ci.yml"
   push:
     branches: [main]
-    paths:
-      - "src/frontend/**"
 
 defaults:
   run:
