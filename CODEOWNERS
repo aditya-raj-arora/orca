@@ -34,6 +34,6 @@
 /src/frontend/src/api/                 @armoredglock
 
 # P6 — Frontend Engineer (Map/Trace) + QA/Integration Lead
-/src/frontend/src/components/Map/      @P6-GITHUB-HANDLE
-/src/frontend/src/components/TraceViewer/  @P6-GITHUB-HANDLE
-/docker-compose.yml                    @P6-GITHUB-HANDLE
+/src/frontend/src/components/Map/      @swatisaumya
+/src/frontend/src/components/TraceViewer/  @swatisaumya
+/docker-compose.yml                    @swatisaumya

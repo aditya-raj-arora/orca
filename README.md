@@ -65,7 +65,7 @@ scripts/                Dev/setup scripts
 | P3 | Weather & Ocean Data Engineer | Weather Agent, Ocean Agent, their adapters | Swaraj Rane ([@ArmouredOre](https://github.com/ArmouredOre)) |
 | P4 | Geospatial & Risk Engineer | Geofencing Agent, Risk/Safety Agent, DB schema | [@m123ukta](https://github.com/m123ukta) |
 | P5 | Frontend Engineer (Core UI) | Chat UI, voice I/O, Bhashini client integration | [@armoredglock](https://github.com/armoredglock) |
-| P6 | Frontend Engineer (Map/Trace) + QA/Integration Lead | Map panel, trace viewer, E2E tests, deployment | *yet to join — fill in* |
+| P6 | Frontend Engineer (Map/Trace) + QA/Integration Lead | Map panel, trace viewer, E2E tests, deployment | [@swatisaumya](https://github.com/swatisaumya) |
 
 Update this table and `CODEOWNERS` with real GitHub handles as teammates join — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md#onboarding-a-new-teammate).
