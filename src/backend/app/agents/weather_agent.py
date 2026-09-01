@@ -32,6 +32,11 @@ def _unavailable() -> WeatherResult:
         active_alerts=[],
         data_timestamp=None,
         status="unavailable",
+        precipitation_mm=None,
+        visibility_m=None,
+        # Whole adapter is unavailable, so alerts are unknown too, not "clear"
+        # — see WeatherResult.alerts_source_available (NFR-REL-2).
+        alerts_source_available=False,
     )
 
 
@@ -67,6 +72,9 @@ class WeatherAgent:
             active_alerts=list(data.get("active_alerts", [])),  # FR-WX-2
             data_timestamp=_timestamp(data, result.fetched_at),  # FR-WX-3
             status="ok",
+            precipitation_mm=data.get("precipitation_mm"),  # FR-WX-1
+            visibility_m=data.get("visibility_m"),           # FR-WX-1
+            alerts_source_available=bool(data.get("alerts_source_available", True)),
         )
 
 

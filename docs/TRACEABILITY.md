@@ -14,8 +14,8 @@ it's kept accurate by review discipline (CONTRIBUTING.md §4).
 |---|---|---|---|---|
 | FR-LANG-1..6 | Bhashini Integration Module | LLD §2.1 | `src/backend/app/language/bhashini_client.py` | P2 |
 | FR-PLAN-1..5 | Planner Agent | LLD §2.2, §4.1 | `src/backend/app/orchestration/planner_agent.py` | P1 |
-| FR-WX-1..4 | Weather Agent | LLD §2.3 | `src/backend/app/agents/weather_agent.py`, `data_access/weather_adapter.py` | P3 |
-| FR-OCEAN-1..4 | Ocean Agent | LLD §2.4, §4.3 | `src/backend/app/agents/ocean_agent.py`, `data_access/incois_adapter.py` | P3 |
+| FR-WX-1..4 | Weather Agent | LLD §2.3 | `src/backend/app/agents/weather_agent.py`, `data_access/weather_adapter.py`, `schemas/weather.py` | P3 |
+| FR-OCEAN-1..4 | Ocean Agent | LLD §2.4, §4.3 | `src/backend/app/agents/ocean_agent.py`, `data_access/incois_adapter.py`, `schemas/ocean.py` | P3 |
 | FR-GEO-1..4 | Geofencing Agent | LLD §2.5 | `src/backend/app/agents/geofencing_agent.py`, `data_access/gis_boundary_adapter.py` | P4 |
 | FR-RISK-1..3 | Risk / Safety Agent | LLD §2.6, §4.2 | `src/backend/app/agents/risk_safety_agent.py` | P4 |
 | FR-SYN-1..3 | Synthesis Agent | LLD §2.7 | `src/backend/app/orchestration/synthesis_agent.py` | P2 |

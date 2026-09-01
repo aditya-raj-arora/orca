@@ -39,6 +39,12 @@ class RiskSafetyAgent:
         docs/ORCA_LLD_v1.0.docx before coding):
           1. If weather is None or weather.status == 'unavailable' -> return
              INSUFFICIENT_DATA (a safety-relevant input is missing).
+          1a. P1/P3 contract-lock addendum (2026-09-01): also treat
+              weather.alerts_source_available == False as this same case.
+              Both alert sources failed, so weather.active_alerts == [] is
+              "unknown", not "no alerts" — do NOT let it fall through to the
+              alerts-severity branch (step 4) as if it were trustworthy.
+              INSUFFICIENT_DATA, never SAFE, per NFR-REL-2.
           2. Same check for geofence (geofence is the only agent whose absence
              on its own should probably be treated as UNSAFE-leaning rather
              than merely "insufficient" if a query is boundary-relevant —

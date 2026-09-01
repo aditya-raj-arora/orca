@@ -59,7 +59,11 @@ class OceanAgent:
         None when INCOIS is unreachable or no advisory is published — the
         orchestration graph already treats a None ocean result as
         'unavailable' (graph._ocean_node, `unavailable=None`), and PFZResult
-        has no status field. No fabricated PFZ on failure (NFR-REL-1)."""
+        has no status field. No fabricated PFZ on failure (NFR-REL-1).
+
+        Blessed as the canonical contract at the P1 contract-lock sync
+        (2026-09-01) — PFZResult stays status-field-free; None is the
+        unavailable sentinel everywhere it's consumed (graph, Risk/Safety)."""
         result = self._adapter.fetch({"kind": "pfz"})
         pfz = (result.data or {}).get("pfz") or []
         if result.status == "unavailable" or not pfz:
