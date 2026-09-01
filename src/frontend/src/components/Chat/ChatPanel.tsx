@@ -22,6 +22,7 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [traceSteps, setTraceSteps] = useState<string[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -35,6 +36,7 @@ export default function ChatPanel() {
 
     wsClient.connect(sessionId, (msg: ServerMessage) => {
       if (msg.type === "final_response") {
+        setTraceSteps([]);
         setMessages((prev) => [
           ...prev,
           {
@@ -44,13 +46,20 @@ export default function ChatPanel() {
             verdict: msg.verdict,
           },
         ]);
+        if (msg.audio_base64) {
+          const audio = new Audio(`data:audio/wav;base64,${msg.audio_base64}`);
+          audio.play().catch(e => console.error("Audio playback failed", e));
+        }
       } else if (msg.type === "error") {
+        setTraceSteps([]);
         setMessages((prev) => [
           ...prev,
           { id: Date.now().toString(), sender: "system", text: `Error: ${msg.message}` },
         ]);
+      } else if (msg.type === "trace_update") {
+        setTraceSteps((prev) => [...prev, msg.step]);
+        window.dispatchEvent(new CustomEvent("trace_update", { detail: msg }));
       }
-      // TODO(P5, Sprint 3): hand off trace_update to TraceViewer
     });
   }, [sessionId]);
 
@@ -123,6 +132,14 @@ export default function ChatPanel() {
             <div>{m.text}</div>
           </div>
         ))}
+        {traceSteps.length > 0 && (
+          <div className="chat-message system trace-progress" aria-live="polite" aria-label="Agent progress">
+            <div className="trace-label">Processing…</div>
+            {traceSteps.map((step, i) => (
+              <div key={i} className="trace-step">{step}</div>
+            ))}
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
