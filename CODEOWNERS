@@ -15,23 +15,23 @@
 /.github/                              @aditya-raj-arora
 
 # P2 — LLM / Synthesis Engineer
-/src/backend/app/orchestration/synthesis_agent.py  @P2-GITHUB-HANDLE
+/src/backend/app/orchestration/synthesis_agent.py  @Deep-R28
 
 # P3 — Weather & Ocean Data Engineer
-/src/backend/app/agents/weather_agent.py           @P3-GITHUB-HANDLE
-/src/backend/app/agents/ocean_agent.py             @P3-GITHUB-HANDLE
-/src/backend/app/data_access/weather_adapter.py    @P3-GITHUB-HANDLE
-/src/backend/app/data_access/incois_adapter.py     @P3-GITHUB-HANDLE
+/src/backend/app/agents/weather_agent.py           @ArmouredOre
+/src/backend/app/agents/ocean_agent.py             @ArmouredOre
+/src/backend/app/data_access/weather_adapter.py    @ArmouredOre
+/src/backend/app/data_access/incois_adapter.py     @ArmouredOre
 
 # P4 — Geospatial & Risk Engineer
-/src/backend/app/agents/geofencing_agent.py        @P4-GITHUB-HANDLE
-/src/backend/app/agents/risk_safety_agent.py       @P4-GITHUB-HANDLE
-/src/backend/app/data_access/gis_boundary_adapter.py  @P4-GITHUB-HANDLE
-/src/backend/app/db/                               @P4-GITHUB-HANDLE
+/src/backend/app/agents/geofencing_agent.py        @m123ukta
+/src/backend/app/agents/risk_safety_agent.py       @m123ukta
+/src/backend/app/data_access/gis_boundary_adapter.py  @m123ukta
+/src/backend/app/db/                               @m123ukta
 
 # P5 — Frontend Engineer (Core UI)
-/src/frontend/src/components/Chat/     @P5-GITHUB-HANDLE
-/src/frontend/src/api/                 @P5-GITHUB-HANDLE
+/src/frontend/src/components/Chat/     @armoredglock
+/src/frontend/src/api/                 @armoredglock
 
 # P6 — Frontend Engineer (Map/Trace) + QA/Integration Lead
 /src/frontend/src/components/Map/      @P6-GITHUB-HANDLE
