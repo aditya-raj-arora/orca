@@ -130,7 +130,7 @@ FORECAST_BASE="${WEATHER_FORECAST_BASE_URL:-https://api.open-meteo.com/v1}"
 MARINE_BASE="${MARINE_API_BASE_URL:-https://marine-api.open-meteo.com/v1}"
 om_fc() { # $1=lat $2=lon $3=label
   curl -fsS -m 30 \
-    "${FORECAST_BASE}/forecast?latitude=$1&longitude=$2&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,visibility&hourly=wind_speed_10m,precipitation,visibility&forecast_days=2&timezone=auto" \
+    "${FORECAST_BASE}/forecast?latitude=$1&longitude=$2&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,visibility,weather_code&timeformat=unixtime&wind_speed_unit=kmh" \
     -o "$OUT_WX/openmeteo_forecast_$3.json" \
     -w "HTTP %{http_code}  forecast @ $3 -> openmeteo_forecast_$3.json\n" \
     || echo "  forecast @ $3 FAILED (non-blocking)"
@@ -145,7 +145,7 @@ om_fc "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 # ---------------------------------------------------------------------------
 om_marine() { # $1=lat $2=lon $3=label
   curl -fsS -m 30 \
-    "${MARINE_BASE}/marine?latitude=$1&longitude=$2&current=wave_height,wave_direction,wave_period&hourly=wave_height&forecast_days=2&timezone=auto" \
+    "${MARINE_BASE}/marine?latitude=$1&longitude=$2&current=wave_height,wave_direction,wave_period&timeformat=unixtime" \
     -o "$OUT_WX/openmeteo_marine_$3.json" \
     -w "HTTP %{http_code}  marine @ $3 -> openmeteo_marine_$3.json\n" \
     || echo "  marine @ $3 FAILED (non-blocking)"

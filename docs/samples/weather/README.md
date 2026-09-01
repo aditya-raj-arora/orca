@@ -15,13 +15,15 @@ Locations: Kochi (9.93, 76.26), Chennai (13.08, 80.27), Kollam (8.88, 76.60).
 
 ## What the samples returned (2026-09-01, `current` block)
 
-| Loc | wind km/h | gust km/h | precip mm | visibility m | wave m | wave period s |
-|---|---|---|---|---|---|---|
-| Kochi | 16.2 | 37.4 | 0.0 | 30960 | 1.26 | 10.15 |
-| Chennai | 9.4 | 25.6 | 0.1 | 5760 | 0.70 | 8.90 |
-| Kollam | 19.6 | 43.2 | 0.0 | 28180 | 1.30 | 10.85 |
+| Loc | wind km/h | gust km/h | precip mm | visibility m | wx code | wave m | wave period s |
+|---|---|---|---|---|---|---|---|
+| Kochi | 13.9 | 31.7 | 0.0 | 18760 | 0 | 1.26 | 10.4 |
+| Chennai | 12.6 | 29.9 | 0.0 | 23000 | 3 | 0.70 | 8.5 |
+| Kollam | 16.0 | 36.7 | 0.0 | 27660 | 0 | 1.32 | 10.9 |
 
-Both Open-Meteo payloads carry an ISO `time` on every block → FR-WX-3.
+Values change on every re-run (live data). `time` is a **unix epoch**
+(`&timeformat=unixtime`) → `WeatherAgent` converts it to a UTC `datetime`
+(FR-WX-3). `wind_speed_unit=kmh` so `wind_speed_10m` is already km/h.
 
 ## GDACS
 
