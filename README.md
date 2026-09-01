@@ -13,9 +13,9 @@ and fishing-ground questions — built by correlating live weather, oceanographi
 
 | If you want to... | Read |
 |---|---|
-| Understand *what* we're building and why | [`docs/ORCA_SRS_v1.1.docx`](docs/ORCA_SRS_v1.1.docx) — Software Requirements Specification |
-| Understand the system architecture | [`docs/ORCA_HLD_v1.1.docx`](docs/ORCA_HLD_v1.1.docx) — High-Level Design |
-| Understand exact classes, schemas, algorithms | [`docs/ORCA_LLD_v1.0.docx`](docs/ORCA_LLD_v1.0.docx) — Low-Level Design |
+| Understand *what* we're building and why | [`docs/ORCA_SRS_v1.1.md`](docs/ORCA_SRS_v1.1.md) — Software Requirements Specification ([.docx](docs/ORCA_SRS_v1.1.docx) is the authoritative/sign-off copy) |
+| Understand the system architecture | [`docs/ORCA_HLD_v1.1.md`](docs/ORCA_HLD_v1.1.md) — High-Level Design ([.docx](docs/ORCA_HLD_v1.1.docx) authoritative) |
+| Understand exact classes, schemas, algorithms | [`docs/ORCA_LLD_v1.0.md`](docs/ORCA_LLD_v1.0.md) — Low-Level Design ([.docx](docs/ORCA_LLD_v1.0.docx) authoritative) |
 | See who owns what, the build schedule, tech stack | [`docs/ORCA_Chat_Summary.docx`](docs/ORCA_Chat_Summary.docx) — Role assignments & 6-day plan |
 | Understand how we work (branching, PRs, traceability) | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Know who to ping for a given file | [`CODEOWNERS`](CODEOWNERS) |
