@@ -33,8 +33,12 @@ class Settings(BaseSettings):
     # Weather / marine (owner P3, docs/p3-data-source-spike.md §2). All card-free;
     # only weatherapi_key needs a (free, no-card) key. weather_api_key /
     # weather_api_base_url are retained but unused — the OpenWeather plan was
-    # dropped; render.yaml still references weather_api_key.
-    # TODO(P1): confirm these five at the Day-1 contract-lock sync.
+    # dropped.
+    # Blessed as the canonical set at the P1 contract-lock sync (2026-09-01):
+    # weather_forecast_base_url, marine_api_base_url, weatherapi_base_url,
+    # weatherapi_key, gdacs_base_url, incois_geoserver_url, incois_pfz_wfs_url,
+    # ocean_pfz_staleness_hours (see PR #28). render.yaml updated to match —
+    # drops weather_api_key/weather_api_base_url, adds weatherapi_key.
     weather_api_key: str = ""
     weather_api_base_url: str = ""
     weather_forecast_base_url: str = "https://api.open-meteo.com/v1"

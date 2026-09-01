@@ -21,6 +21,7 @@ advisory returns status='stale' (data still included).
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -35,6 +36,18 @@ _HTTP_TIMEOUT_S = 5.0
 _PFZ_TYPENAME = "PFZ_Automation:pfzlines"
 # WMS GetFeatureInfo no-data: INCOIS coverages use -1; guard large negatives too.
 _NODATA_THRESHOLD = -900.0
+
+# Per-day PFZ cache (P1 contract-lock decision, 2026-09-01): the WFS pull is a
+# single ~1.3 MB GeoJSON response against a 6s AGENT_TIMEOUT_SECONDS budget
+# (orchestration/graph.py), and PFZ advisories are published once per day
+# (Year + Julian_day), so re-fetching within the same UTC day buys nothing.
+# Module-level (not instance-level): build_orchestration_graph() constructs a
+# fresh INCOISAdapter per request (graph.py's run_query TODO(P1) notes this),
+# so an instance attribute would never actually hit. Only successful fetches
+# are cached — a transient failure must not get "stuck" unavailable/stale for
+# the rest of the day.
+_PFZ_CACHE_LOCK = threading.Lock()
+_PFZ_CACHE: dict[str, AdapterResult] = {}  # "YYYY-MM-DD" (UTC) -> cached result
 
 
 def _utcnow() -> datetime:
@@ -69,9 +82,16 @@ class INCOISAdapter(DataSourceAdapter):
     # ------------------------------------------------------------------ #
     def _fetch_pfz(self) -> AdapterResult:
         now = _utcnow()
+        cache_key = now.strftime("%Y-%m-%d")
+        with _PFZ_CACHE_LOCK:
+            cached = _PFZ_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         gj = self._get_pfz_geojson()
         centroids, advisory_date = _parse_pfz_geojson(gj)
         if not centroids:
+            # Don't cache a failure — retry on the next call, not tomorrow.
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
 
         status: str = "ok"
@@ -80,7 +100,7 @@ class INCOISAdapter(DataSourceAdapter):
             if age_h > self._staleness_hours:
                 status = "stale"
 
-        return AdapterResult(
+        result = AdapterResult(
             data={
                 "pfz": centroids,
                 "advisory_date": advisory_date.isoformat() if advisory_date else None,
@@ -89,6 +109,10 @@ class INCOISAdapter(DataSourceAdapter):
             fetched_at=now,
             status=status,  # type: ignore[arg-type]
         )
+        with _PFZ_CACHE_LOCK:
+            _PFZ_CACHE.clear()  # single-entry cache: only today's key is ever useful
+            _PFZ_CACHE[cache_key] = result
+        return result
 
     def _get_pfz_geojson(self) -> dict[str, Any]:
         r = httpx.get(

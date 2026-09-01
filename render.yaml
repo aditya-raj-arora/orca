@@ -55,9 +55,11 @@ services:
         sync: false
       - key: BHASHINI_BASE_URL
         value: https://bhashini.gov.in/api
-      - key: WEATHER_API_KEY
-        sync: false
-      - key: WEATHER_API_BASE_URL
+      # WeatherAPI.com — severe-weather/cyclone alerts (FR-WX-2). Free key,
+      # no card; see docs/p3-data-source-spike.md §2. forecast/marine/GDACS/
+      # INCOIS base URLs all have working defaults in core/config.py and
+      # don't need a Render override.
+      - key: WEATHERAPI_KEY
         sync: false
       - key: INCOIS_BASE_URL
         value: https://incois.gov.in
