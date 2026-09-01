@@ -55,7 +55,8 @@ class QueryResponse(BaseModel):
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     """Basic liveness probe — used by CI/deployment, not an SRS requirement,
-    but cheap and useful for the demo-day fallback script (SRS §6.5 Sprint 4)."""
+    but cheap and useful for the demo-day fallback script (SRS §6.5 Sprint 4).
+    (Trivial edit — verifying the CI -> deploy-backend gate end-to-end.)"""
     return {"status": "ok"}
 
 

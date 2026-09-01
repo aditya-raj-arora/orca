@@ -6,6 +6,8 @@
  * than each rewriting App.tsx independently.
  *
  * Reference: HLD v1.0 §3 "Web Client" row, FR-UI-1 to FR-UI-4.
+ *
+ * (Trivial edit — verifying the CI -> deploy-frontend gate end-to-end.)
  */
 import ChatPanel from "./components/Chat/ChatPanel";
 import MapPanel from "./components/Map/MapPanel";
