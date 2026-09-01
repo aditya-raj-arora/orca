@@ -6,25 +6,77 @@
  * Implements: FR-UI-1, FR-UI-4.
  * Reference: HLD v1.0 §3 "Web Client", LLD v1.0 §5.2 (WebSocket message shapes).
  */
+import { useState } from "react";
+import type { ServerFinalResponse } from "../../api/wsClient";
+import "./ChatPanel.css";
+
+type ChatMessage = {
+  id: string;
+  sender: "user" | "system";
+  text: string;
+  verdict?: ServerFinalResponse["verdict"];
+};
+
+// Hardcoded mock to prove the layout renders a ServerFinalResponse end-to-end.
+const MOCK_RESPONSE: ChatMessage = {
+  id: "mock-1",
+  sender: "system",
+  text: "Conditions near Kochi are currently clear. Sea state is calm with wave heights below 1.5 m. PFZ advisory suggests good fishing potential 12 nm southwest.",
+  verdict: "SAFE",
+};
+
 export default function ChatPanel() {
-  // TODO(P5):
-  //   1. Connect to /ws/v1/query/{session_id} (see src/api/ — build a small
-  //      typed client wrapping the LLD §5.2 message schema, don't inline raw
-  //      WebSocket calls in this component).
-  //   2. Mic capture -> base64 audio -> send {type:"query", mode:"voice", ...}
-  //      (Web Audio API, per HLD §6 tech stack).
-  //   3. Render streamed trace_update messages by handing them off to
-  //      TraceViewer (owned by P6) — don't duplicate trace-rendering logic
-  //      here.
-  //   4. Render final_response: text, and play audio_base64 via TTS playback
-  //      for voice-mode interactions (FR-LANG-5).
-  //   5. Multi-turn history (FR-UI-4): fetch GET /api/v1/session/{id}/history
-  //      on mount, render prior turns above the live conversation.
-  //   6. Accessibility (NFR-USE-3): every visual element needs a text/voice
-  //      equivalent — do not rely on color alone for the verdict banner.
+  const [messages, setMessages] = useState<ChatMessage[]>([MOCK_RESPONSE]);
+  const [inputText, setInputText] = useState("");
+
+  const handleSendText = () => {
+    if (!inputText.trim()) return;
+
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now().toString(), sender: "user", text: inputText },
+    ]);
+
+    // TODO(P5, Sprint 1): replace with real/mock WebSocket response
+    setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        { ...MOCK_RESPONSE, id: Date.now().toString() },
+      ]);
+    }, 500);
+
+    setInputText("");
+  };
+
   return (
-    <section aria-label="Conversation">
-      <p>TODO(P5): chat UI — see component doc comment for the task breakdown.</p>
+    <section className="chat-container" aria-label="Conversation">
+      <div className="chat-history">
+        {messages.map((m) => (
+          <div key={m.id} className={`chat-message ${m.sender}`}>
+            {m.verdict && (
+              <div className={`verdict-banner ${m.verdict}`} aria-label={`Verdict: ${m.verdict}`}>
+                {m.verdict}
+              </div>
+            )}
+            <div>{m.text}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="chat-input-area">
+        <input
+          type="text"
+          className="chat-input"
+          placeholder="Ask a question..."
+          value={inputText}
+          onChange={(e) => setInputText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSendText()}
+          aria-label="Message input"
+        />
+        <button className="btn-icon" onClick={handleSendText} aria-label="Send message">
+          ➤
+        </button>
+      </div>
     </section>
   );
 }
