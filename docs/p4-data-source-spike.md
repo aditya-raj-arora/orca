@@ -93,6 +93,45 @@ chars to fit that table's `VARCHAR(100)` columns. Written to
 loads and caches this file in-process, same error contract as the other
 adapters (`status="unavailable"` rather than raising).
 
+## 4a. Follow-up: closing the "6 of ~900" gap (PR #62 review, Mukta)
+
+Protected Planet's own India country profile cites ~900 WDPA-registered
+protected areas nationally; the bulk country package only ships what's
+publicly releasable — **India restricts public geometry for most of its
+registered protected areas**, a country-level WDPA policy, not an artifact of
+using the bulk download over the API (the API enforces the same restriction
+and additionally needs a token). Public total is 90 (63 polygons + 27
+points); 6 of those 63 polygons are tagged marine/coastal, the other 84 are
+inland and irrelevant to this geofence.
+
+Tried to close the gap with an India-native source that might not be subject
+to WDPA's global restriction:
+
+- **WII/ENVIS geographic-data server, India Biodiversity Portal GeoServer,
+  ISRO Bhuvan's OWS subdomains** (`docs/CREDENTIALS.md` #5 candidates): all
+  connection-timed-out from this environment. Bhuvan's main portal
+  (`bhuvan.nrsc.gov.in`) resolves, but every `bhuvan-vec*`/`bhuvan-wms*` OWS
+  host tried does not — likely India-network-gated rather than actually down.
+- **OpenStreetMap (Overpass API)**: does have some Indian marine protected
+  areas WDPA doesn't publish — found a `boundary=protected_area` relation
+  named "Marine National Park" near the real Gulf of Kutch Marine National
+  Park (OSM relation 21253238) plus two Andaman island sanctuaries (Cinque
+  Islands WLS, Snake Island II WLS). But the Gulf of Kutch relation resolves
+  to a single ~8.9 km² fragment (one reef/island), not the park's full
+  ~458 km² multi-island extent — OSM's mapping here is real but partial, and
+  stitching a trustworthy boundary from it would need assembling many
+  individual island/reef relations plus manual verification against an
+  authoritative source. Given FR-GEO-4 (a geofence result must never be
+  softened), seeding a boundary that's silently 98% smaller than the actual
+  park is worse than not having it — a vessel well inside the real park could
+  read as clear. Not added to the seeded dataset on that basis.
+
+**Net for now**: the 6 WDPA marine/coastal MPAs stand as the seeded set;
+closing further requires either an India-network vantage point to reach the
+three gated government services above, or a manual multi-relation OSM
+assembly + verification pass — flagging as a Sprint 1+ follow-up rather than
+blocking Sprint 0 exit criteria (which only requires ≥1 MPA seeded).
+
 ## 5. Verified against local PostGIS
 
 Confirmed against `postgis/postgis:16-3.4` via `docker compose up db`:
