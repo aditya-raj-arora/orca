@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.schemas.common import Citation
@@ -112,7 +112,7 @@ def _extract_data_timestamp(result: object) -> datetime:
         "Synthesis: agent result has no data_timestamp — falling back to "
         "now(). Should not happen with real agent outputs."
     )
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class SynthesisAgent:
@@ -187,7 +187,9 @@ class SynthesisAgent:
         data = json.loads(response.text)
         return list(data.get("sentences", []))
 
-    def _citation_coverage_ok(self, sentences: list[dict], available_results: dict[str, object]) -> bool:
+    def _citation_coverage_ok(
+        self, sentences: list[dict], available_results: dict[str, object]
+    ) -> bool:
         """FR-SYN-2 safety check. Every sentence must have a non-empty
         `source` that is either "none" or a key present in
         available_results — never fabricated or missing."""
@@ -205,7 +207,9 @@ class SynthesisAgent:
                 return False
         return True
 
-    def _build_citations(self, sentences: list[dict], available_results: dict[str, object]) -> list[Citation]:
+    def _build_citations(
+        self, sentences: list[dict], available_results: dict[str, object]
+    ) -> list[Citation]:
         """One Citation per distinct agent actually cited — never
         fabricated (NFR-REL-1 extended to citations)."""
         cited_agents = {s["source"] for s in sentences if s.get("source") != "none"}
@@ -217,7 +221,9 @@ class SynthesisAgent:
             citations.append(Citation(source=agent_name, timestamp=_extract_data_timestamp(result)))
         return citations
 
-    def _degraded_response(self, available_results: dict[str, object], plan: ExecutionPlan) -> ComposedResponse:
+    def _degraded_response(
+        self, available_results: dict[str, object], plan: ExecutionPlan
+    ) -> ComposedResponse:
         """Last resort — no available data, or citation coverage failed
         twice. States only the verdict (if present) and never ships an
         unverified sentence to a fisherman."""
@@ -240,7 +246,9 @@ class SynthesisAgent:
                 "I couldn't retrieve the data needed to answer that for this "
                 "location right now. Please try again shortly."
             )
-        return ComposedResponse(text=text, citations=[], map_payload=MapPayload(), trace=list(plan.trace))
+        return ComposedResponse(
+            text=text, citations=[], map_payload=MapPayload(), trace=list(plan.trace)
+        )
 
     def _build_llm_client(self):
         from google import genai

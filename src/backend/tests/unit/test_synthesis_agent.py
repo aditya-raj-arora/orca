@@ -5,10 +5,9 @@ Fixture-driven tests for SynthesisAgent.compose() (Issue #9 / #14) — no real
 LLM call, no dependency on P3/P4's agent dataclasses (plain dicts work fine,
 see synthesis_agent.py's _serialize_result()).
 """
-from datetime import datetime, timezone
-from unittest.mock import MagicMock
-
 import json
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 from app.orchestration.synthesis_agent import SynthesisAgent
 from app.schemas.synthesis import ExecutionPlan
@@ -36,7 +35,7 @@ def test_compose_happy_path():
             "wind_speed_kmh": 18.0,
             "wave_height_m": 1.2,
             "active_alerts": [],
-            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=timezone.utc),
+            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
             "status": "ok",
         },
         "risk_safety": {
@@ -61,7 +60,7 @@ def test_compose_degrades_on_bad_source():
     )
 
     agent = SynthesisAgent(llm_client=fake_client)
-    results = {"weather": {"status": "unavailable", "data_timestamp": datetime.now(timezone.utc)}}
+    results = {"weather": {"status": "unavailable", "data_timestamp": datetime.now(UTC)}}
     plan = ExecutionPlan(trace=[])
 
     response = agent.compose(plan, results, language="en")
@@ -85,7 +84,7 @@ def test_compose_filters_none_results():
             "wind_speed_kmh": 5.0,
             "wave_height_m": 0.5,
             "active_alerts": [],
-            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=timezone.utc),
+            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
             "status": "ok",
         },
         "ocean": None,
