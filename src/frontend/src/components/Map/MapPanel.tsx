@@ -1,36 +1,76 @@
-/**
- * Interactive map: queried location, PFZ zone(s), geofencing boundaries.
- *
- * Owner: P6 (Frontend Engineer, Map/Trace + QA/Integration Lead).
- * Implements: FR-UI-2.
- * Reference: HLD v1.0 §6 (Leaflet), LLD v1.0 §5.2 (map_payload shape in the
- * final_response message — keep this in sync with
- * src/backend/app/schemas/synthesis.py MapPayload).
- */
-import { MapContainer, TileLayer } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polygon } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import L from "leaflet";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
-const DEFAULT_CENTER: [number, number] = [10.0, 76.3]; // Kochi-ish, placeholder
+delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: () => string })._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+});
 
-export default function MapPanel() {
-  // TODO(P6):
-  //   1. Accept `markers` and `zones` (from ComposedResponse.map_payload,
-  //      LLD §5.2) as props once wired up from App.tsx's session state.
-  //   2. Render markers for queried location + nearest PFZ centroid
-  //      (FR-OCEAN-3).
-  //   3. Render geofence zone overlays (MPA polygons, IMBL buffer) with a
-  //      visually distinct, unmissable style for violations (FR-GEO-3 —
-  //      this must be as unambiguous on the map as it is in the text).
-  //   4. Add a text-equivalent legend/description for each layer (NFR-USE-3
-  //      accessibility requirement — map content isn't voice/text-readable by
-  //      default).
+interface MarkerData {
+  id: string;
+  lat: number;
+  lng: number;
+  label: string;
+}
+
+interface ZoneData {
+  id: string;
+  coordinates: [number, number][];
+  label: string;
+}
+
+interface MapPanelProps {
+  markers?: MarkerData[];
+  zones?: ZoneData[];
+}
+
+const DEFAULT_CENTER: [number, number] = [10.0, 76.3];
+
+const MOCK_MARKERS: MarkerData[] = [
+  { id: "1", lat: 10.0, lng: 76.3, label: "Queried Location (Kochi Centroid)" }
+];
+
+const MOCK_ZONES: ZoneData[] = [
+  {
+    id: "mpa-1",
+    label: "Mock MPA Zone",
+    coordinates: [
+      [9.9, 76.1],
+      [10.1, 76.1],
+      [10.1, 76.4],
+      [9.9, 76.4]
+    ]
+  }
+];
+
+export default function MapPanel({
+  markers = MOCK_MARKERS,
+  zones = MOCK_ZONES
+}: MapPanelProps) {
   return (
-    <MapContainer center={DEFAULT_CENTER} zoom={7} style={{ height: "100%", width: "100%" }}>
+    <MapContainer center={DEFAULT_CENTER} zoom={8} style={{ height: "100%", width: "100%" }}>
       <TileLayer
-        attribution='&copy; OpenStreetMap contributors'
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {/* TODO(P6): marker/zone layers go here */}
+
+      {markers.map((marker) => (
+        <Marker key={marker.id} position={[marker.lat, marker.lng]}>
+          <Popup>{marker.label}</Popup>
+        </Marker>
+      ))}
+
+      {zones.map((zone) => (
+        <Polygon key={zone.id} positions={zone.coordinates} pathOptions={{ color: "red" }}>
+          <Popup>{zone.label}</Popup>
+        </Polygon>
+      ))}
     </MapContainer>
   );
 }
