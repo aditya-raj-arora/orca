@@ -21,7 +21,7 @@ THIS IS THE SAFETY-CRITICAL COMPONENT OF THE WHOLE SYSTEM.
 from __future__ import annotations
 
 from app.schemas.geofence import GeofenceResult
-from app.schemas.ocean import OceanParams
+from app.schemas.ocean import PFZResult
 from app.schemas.risk import RiskVerdict
 from app.schemas.weather import WeatherResult
 
@@ -31,7 +31,7 @@ class RiskSafetyAgent:
         self,
         weather: WeatherResult | None,
         geofence: GeofenceResult | None,
-        ocean: OceanParams | None,
+        ocean: PFZResult | None,
     ) -> RiskVerdict:
         """
         TODO(P4): implement the decision tree from LLD §4.2 / Figure 2. Rough
