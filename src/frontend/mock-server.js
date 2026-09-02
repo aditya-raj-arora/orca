@@ -21,7 +21,23 @@ wss.on("connection", (ws, req) => {
       console.log("Received:", data);
 
       if (data.type === "query") {
-        // Simulate a final_response after a short delay
+        // Simulate trace_update stream then final_response
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: "trace_update", step: "Planner Agent: routing query…" }));
+        }, 500);
+
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: "trace_update", step: "Weather Agent: fetching conditions…" }));
+        }, 1200);
+
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: "trace_update", step: "Ocean Agent: retrieving PFZ advisory…" }));
+        }, 2000);
+
+        setTimeout(() => {
+          ws.send(JSON.stringify({ type: "trace_update", step: "Synthesis Agent: generating response…" }));
+        }, 2800);
+
         setTimeout(() => {
           ws.send(JSON.stringify({
             type: "final_response",
@@ -31,7 +47,7 @@ wss.on("connection", (ws, req) => {
             citations: [{ source: "INCOIS PFZ Advisory", timestamp: "2026-09-01T12:00:00Z" }],
             map_payload: { markers: [], zones: [] }
           }));
-        }, 500);
+        }, 3500);
       }
     } catch (e) {
       console.error("Parse error:", e);
