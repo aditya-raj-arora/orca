@@ -33,7 +33,9 @@ MIN_ENTITY_CONFIDENCE = 0.5
 
 # google-genai model id. Free tier via Google AI Studio — see
 # docs/CREDENTIALS.md #1 for why Gemini was chosen over Claude/GPT.
-_GEMINI_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash was retired for new API keys (#51); gemini-3.5-flash-lite
+# chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
@@ -192,7 +194,9 @@ class PlannerAgent:
             contents=f"{_ENTITY_EXTRACTION_SYSTEM_PROMPT}\n\nUser query: {query.text}",
             config={
                 "response_mime_type": "application/json",
-                "temperature": 0.0,
+                # temperature/top_p/top_k are unsupported on Gemini 3.x —
+                # the model manages its own sampling now (#51); passing
+                # them errors on later model generations.
             },
         )
         data = json.loads(response.text)
