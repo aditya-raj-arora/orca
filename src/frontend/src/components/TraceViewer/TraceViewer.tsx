@@ -1,25 +1,31 @@
-/**
- * Live agent-orchestration trace panel — which agents were invoked, in what
- * order, and why.
- *
- * Owner: P6 (Frontend Engineer, Map/Trace + QA/Integration Lead).
- * Implements: FR-UI-3, surfaces FR-PLAN-4's human-readable trace.
- * Reference: LLD v1.0 §5.2 (`trace_update` streamed WebSocket messages).
- */
+import React from 'react';
+
+interface TraceStep {
+  id: string;
+  step: string;
+  status: 'pending' | 'complete' | 'error';
+}
+
+const mockTraces: TraceStep[] = [
+  { id: '1', step: 'Initializing agent orchestration', status: 'complete' },
+  { id: '2', step: 'Querying route planner module', status: 'complete' },
+  { id: '3', step: 'Awaiting telemetry stream response', status: 'pending' },
+];
+
 export default function TraceViewer() {
-  // TODO(P6):
-  //   1. Accept a stream/array of trace_update messages
-  //      ({type:"trace_update", step: string}, LLD §5.2) as props.
-  //   2. Render as an ordered, appending list (static placeholder first per
-  //      the Chat Summary Day 3 plan: "Agent-trace panel (static -> live
-  //      later)" — wire to the real WebSocket stream once P1's backend
-  //      streaming is up, Day 4).
-  //   3. Visually distinguish steps that are still pending vs. complete vs.
-  //      errored/unavailable (ties to NFR-REL-1 — the UI must show, not hide,
-  //      a data-source failure).
   return (
-    <aside aria-label="Agent trace">
-      <p>TODO(P6): live agent-trace viewer — see component doc comment.</p>
+    <aside aria-label="Agent trace" style={{ padding: '1rem', background: '#1e1e1e', color: '#fff', borderRadius: '8px' }}>
+      <h3 style={{ marginTop: 0 }}>Agent Trace</h3>
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {mockTraces.map((trace) => (
+          <li key={trace.id} style={{ marginBottom: '0.5rem', borderBottom: '1px solid #333', paddingBottom: '0.25rem' }}>
+            <span style={{ marginRight: '0.5rem' }}>
+              {trace.status === 'complete' ? '✅' : trace.status === 'pending' ? '⏳' : '❌'}
+            </span>
+            {trace.step}
+          </li>
+        ))}
+      </ul>
     </aside>
   );
 }
