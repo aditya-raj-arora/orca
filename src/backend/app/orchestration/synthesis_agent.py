@@ -31,6 +31,9 @@ _call_bounded when location isn't resolved or the agent errors, so
 agent-returned "status=unavailable" object (e.g. WeatherResult always has a
 real object — see _unavailable_weather_result()). compose() must exclude
 None entries from the prompt/citations entirely, not describe them as data.
+`results["ocean_params"]` (SST/chlorophyll, FR-OCEAN-2, wired 2026-09-02)
+follows the WeatherResult convention instead — always a real OceanParams
+object, unavailability represented by None fields, not a None entry.
 
 MODEL NOTE: uses gemini-3.6-flash, not gemini-2.5-flash (retired for new
 API keys — see Issue #<N>, also affects planner_agent.py). No `temperature`
@@ -54,8 +57,8 @@ _GEMINI_MODEL = "gemini-3.6-flash"
 
 _SYNTHESIS_SYSTEM_PROMPT = """You are the response-composition step of a marine \
 safety assistant. You will be given the outputs of one or more specialist \
-agents (weather, ocean, geofencing, risk_safety) as JSON, plus the target \
-response language.
+agents (weather, ocean, ocean_params, geofencing, risk_safety) as JSON, plus \
+the target response language.
 
 Rules (do not break these):
 1. Use ONLY the facts present in the agent outputs given to you. Never add \

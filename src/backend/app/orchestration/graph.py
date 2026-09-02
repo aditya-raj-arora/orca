@@ -146,16 +146,33 @@ def _ocean_node(agent: OceanAgent):
         location = _location_for(state, "ocean")
         if location is None:
             return {
-                "results": {"ocean": None},
+                "results": {"ocean": None, "ocean_params": None},
                 "trace": ["Ocean Agent: location not resolved to coordinates (unavailable)"],
             }
-        result, trace_line = await _call_bounded(
-            agent.get_nearest_pfz,
-            location,
-            unavailable=None,
-            agent_label="Ocean Agent",
+        # PFZ (Risk-relevant, FR-OCEAN-1/3/4) and SST/chlorophyll
+        # (descriptive only, FR-OCEAN-2 — not consumed by Risk/Safety's
+        # Figure 2 tree, only by Synthesis) are two independent calls on the
+        # same agent instance; run them concurrently rather than serially so
+        # one "ocean" node stays within AGENT_TIMEOUT_SECONDS like every
+        # other specialist, not double it.
+        (pfz_result, pfz_trace), (params_result, params_trace) = await asyncio.gather(
+            _call_bounded(
+                agent.get_nearest_pfz,
+                location,
+                unavailable=None,
+                agent_label="Ocean Agent (PFZ)",
+            ),
+            _call_bounded(
+                agent.get_ocean_parameters,
+                location,
+                unavailable=_unavailable_ocean_params(),
+                agent_label="Ocean Agent (SST/chlorophyll)",
+            ),
         )
-        return {"results": {"ocean": result}, "trace": [trace_line]}
+        return {
+            "results": {"ocean": pfz_result, "ocean_params": params_result},
+            "trace": [pfz_trace, params_trace],
+        }
 
     return _node
 
@@ -314,6 +331,15 @@ def _unavailable_weather_result() -> Any:
     from app.schemas.weather import WeatherResult
 
     return WeatherResult(wind_speed_kmh=0.0, wave_height_m=0.0, status="unavailable")
+
+
+def _unavailable_ocean_params() -> Any:
+    from app.schemas.ocean import OceanParams
+
+    # OceanParams has no status field (FR-OCEAN-2) — unavailability is
+    # represented by None fields, same convention OceanAgent.get_ocean_
+    # parameters() itself uses when INCOIS doesn't publish a value.
+    return OceanParams(sea_surface_temp_c=None, chlorophyll_mg_m3=None)
 
 
 def _unavailable_composed_response() -> ComposedResponse:

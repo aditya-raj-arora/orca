@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 import app.main as gateway
 from app.orchestration.graph import build_orchestration_graph
 from app.schemas.geofence import GeofenceResult
-from app.schemas.ocean import PFZResult
+from app.schemas.ocean import OceanParams, PFZResult
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import AgentInvocationRequest, ComposedResponse, ExecutionPlan
 from app.schemas.weather import WeatherResult
@@ -55,6 +55,9 @@ class FakeOcean:
             data_timestamp=datetime.now(UTC),
             is_stale=False,
         )
+
+    def get_ocean_parameters(self, location):
+        return OceanParams(sea_surface_temp_c=29.1, chlorophyll_mg_m3=0.3)
 
 
 class FakeGeofencing:

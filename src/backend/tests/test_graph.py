@@ -15,7 +15,7 @@ from app.core.session import ConversationContext
 from app.orchestration.graph import run_query
 from app.orchestration.planner_agent import NormalizedQuery
 from app.schemas.geofence import GeofenceResult
-from app.schemas.ocean import PFZResult
+from app.schemas.ocean import OceanParams, PFZResult
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import AgentInvocationRequest, ComposedResponse, ExecutionPlan
 from app.schemas.weather import WeatherResult
@@ -107,6 +107,9 @@ async def test_all_three_agents_fan_out_and_fan_in():
                 centroid=None, distance_km=5.0, bearing_deg=45, data_timestamp=None, is_stale=False
             )
 
+        def get_ocean_parameters(self, location):
+            return OceanParams(sea_surface_temp_c=28.5, chlorophyll_mg_m3=0.4)
+
     class FakeGeofencing:
         def check(self, location):
             return GeofenceResult(within_imbl_buffer=False, imbl_distance_km=20.0, within_mpa=False)
@@ -135,7 +138,13 @@ async def test_all_three_agents_fan_out_and_fan_in():
         synthesis_agent=FakeSynthesis(),
     )
 
-    assert set(state["results"].keys()) == {"weather", "ocean", "geofencing", "risk_safety"}
+    assert set(state["results"].keys()) == {
+        "weather",
+        "ocean",
+        "ocean_params",
+        "geofencing",
+        "risk_safety",
+    }
 
 
 async def test_agent_exception_degrades_to_unavailable_not_crash():
