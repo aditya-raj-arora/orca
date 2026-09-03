@@ -85,9 +85,14 @@ class RiskSafetyAgent:
                 factors.append(
                     f"within {geofence.imbl_distance_km:.1f} km of the IMBL buffer zone"
                 )
-            rationale = "Location is " + " and ".join(factors) + " — this is a non-negotiable safety boundary."
+            rationale = (
+                "Location is " + " and ".join(factors)
+                + " — this is a non-negotiable safety boundary."
+            )
             if ocean is not None and ocean.is_stale:
-                rationale += " (Note: PFZ advisory data is stale and was not used in this verdict.)"
+                rationale += (
+                    " (Note: PFZ advisory data is stale and was not used in this verdict.)"
+                )
             return RiskVerdict(verdict="UNSAFE", rationale=rationale, contributing_factors=factors)
 
         if weather.active_alerts:
