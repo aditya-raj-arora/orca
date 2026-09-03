@@ -35,12 +35,27 @@
         100% { opacity: 1; transform: scale(1); }
       }
     </style>
-    <div id="root">
-      <div id="splash-screen">
-        <div class="orca-logo">ORCA</div>
-        <div class="splash-text">Marine Intelligence Loading...</div>
-      </div>
+    <!-- Splash screen is now outside root so React doesn't instantly overwrite it -->
+    <div id="splash-screen">
+      <div class="orca-logo">ORCA</div>
+      <div class="splash-text">Marine Intelligence Loading...</div>
     </div>
+    
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Keep splash screen visible for at least 1.5 seconds, then fade out -->
+    <script>
+      window.addEventListener("load", () => {
+        setTimeout(() => {
+          const splash = document.getElementById("splash-screen");
+          if (splash) {
+            splash.style.transition = "opacity 0.5s ease";
+            splash.style.opacity = "0";
+            setTimeout(() => splash.remove(), 500);
+          }
+        }, 1500);
+      });
+    </script>
   </body>
 </html>
