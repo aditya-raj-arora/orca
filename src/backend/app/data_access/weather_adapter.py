@@ -103,7 +103,11 @@ class WeatherDataAdapter(DataSourceAdapter):
         if forecast is None or marine is None:
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
 
-        data = _normalise(forecast, marine, wapi_alerts, gdacs_alerts)
+        try:
+            data = _normalise(forecast, marine, wapi_alerts, gdacs_alerts)
+        except Exception as exc:  # noqa: BLE001 - LLD §2.9: never raise on a bad payload shape
+            logger.warning("WeatherDataAdapter: normalise failed on %s", exc)
+            data = None
         if data is None:
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
         return AdapterResult(data=data, fetched_at=now, status="ok")
@@ -269,9 +273,10 @@ def _normalise(
     fcur = forecast.get("current") or {}
     mcur = marine.get("current") or {}
 
-    wind = fcur.get("wind_speed_10m")
-    wave = mcur.get("wave_height")
+    wind = _as_float(fcur.get("wind_speed_10m"))
+    wave = _as_float(mcur.get("wave_height"))
     if wind is None or wave is None:
+        # core fields absent or non-numeric -> not a usable WeatherResult
         return None
 
     epoch = _as_epoch(fcur.get("time") if fcur.get("time") is not None else mcur.get("time"))
@@ -279,13 +284,13 @@ def _normalise(
 
     return {
         # FR-WX-1
-        "wind_speed_kmh": float(wind),
+        "wind_speed_kmh": wind,
         "wind_gust_kmh": _as_float(fcur.get("wind_gusts_10m")),
         "wind_direction_deg": _as_float(fcur.get("wind_direction_10m")),
         "precipitation_mm": _as_float(fcur.get("precipitation")),
         "visibility_m": _as_float(fcur.get("visibility")),
         "weather_code": fcur.get("weather_code"),
-        "wave_height_m": float(wave),
+        "wave_height_m": wave,
         "wave_period_s": _as_float(mcur.get("wave_period")),
         "wave_direction_deg": _as_float(mcur.get("wave_direction")),
         # FR-WX-3
