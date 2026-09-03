@@ -7,7 +7,8 @@ and fishing-ground questions — built by correlating live weather, oceanographi
 
 - **Problem Statement:** SIH26176 (ISRO), Theme: Disaster Management
 - **Event:** Smart India Hackathon 2026
-- **Team lead / P1 (Backend & Orchestration):** Aditya Raj Arora
+- **Team lead:** Mukta Motwani (also P4, Geospatial & Risk Engineer)
+- **P1 (Backend & Orchestration):** Aditya Raj Arora
 
 ## Start here
 
@@ -63,7 +64,7 @@ scripts/                Dev/setup scripts
 | P1 | Backend / Orchestration Lead | FastAPI Gateway, Planner Agent, session lifecycle, LangGraph wiring | Aditya Raj Arora ([@aditya-raj-arora](https://github.com/aditya-raj-arora)) |
 | P2 | LLM / Synthesis Engineer | Synthesis Agent, entity-extraction prompts, citation check | Deep Raja ([@Deep-R28](https://github.com/Deep-R28)) |
 | P3 | Weather & Ocean Data Engineer | Weather Agent, Ocean Agent, their adapters | Swaraj Rane ([@ArmouredOre](https://github.com/ArmouredOre)) |
-| P4 | Geospatial & Risk Engineer | Geofencing Agent, Risk/Safety Agent, DB schema | Mukta Motwani ([@m123ukta](https://github.com/m123ukta)) |
+| P4 | Geospatial & Risk Engineer + **Team Lead** | Geofencing Agent, Risk/Safety Agent, DB schema | Mukta Motwani ([@m123ukta](https://github.com/m123ukta)) |
 | P5 | Frontend Engineer (Core UI) | Chat UI, voice I/O, Bhashini client integration | Sagnik Datta ([@armoredglock](https://github.com/armoredglock)) |
 | P6 | Frontend Engineer (Map/Trace) + QA/Integration Lead | Map panel, trace viewer, E2E tests, deployment | Swati Saumya ([@swatisaumya](https://github.com/swatisaumya)) |
 
