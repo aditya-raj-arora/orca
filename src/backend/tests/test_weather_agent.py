@@ -111,6 +111,19 @@ def test_active_alerts_passed_through_verbatim() -> None:
     assert agent.get_conditions(LatLon(13.08, 80.27)).active_alerts == alerts  # FR-WX-2
 
 
+def test_alerts_source_unavailable_flag_maps_through_to_weatherresult() -> None:
+    # NFR-REL-1: forecast is fine but the alert feeds were unreachable -> the
+    # WeatherResult must say so, not imply "no alerts". (Synthesis wording +
+    # Risk INSUFFICIENT_DATA handling of this flag are P2 #37 / P4 #33.)
+    agent = WeatherAgent(
+        _FakeAdapter(_ok(_ok_data(active_alerts=[], alerts_source_available=False)))
+    )
+    r = agent.get_conditions(LatLon(13.08, 80.27))
+    assert r.status == "ok"
+    assert r.alerts_source_available is False
+    assert r.active_alerts == []
+
+
 def test_window_defaults_to_none_and_location_is_forwarded() -> None:
     fake = _FakeAdapter(_ok(_ok_data()))
     WeatherAgent(fake).get_conditions(LatLon(8.88, 76.60))
