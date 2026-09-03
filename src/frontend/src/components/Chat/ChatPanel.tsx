@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { wsClient } from "../../api/wsClient";
+import { API_BASE_URL } from "../../api/config";
 import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
 import "./ChatPanel.css";
 
@@ -20,9 +21,50 @@ export default function ChatPanel() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
 
-  const [sessionId] = useState(() => {
+  const [sessionId, setSessionId] = useState(() => {
     return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
   });
+  const [isSessionVerified, setIsSessionVerified] = useState(false);
+
+  // Verify session on mount
+  useEffect(() => {
+    const verifySession = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/v1/session/${sessionId}/history`);
+        if (res.status === 404) {
+          // Session has no history on backend. Clear local storage for it.
+          localStorage.removeItem(`orca_chat_history_${sessionId}`);
+          setMessages([]);
+        } else if (res.ok) {
+          // Session valid, load rich history from local storage
+          const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
+          if (saved) {
+            setMessages(JSON.parse(saved));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to verify session history", err);
+      } finally {
+        setIsSessionVerified(true);
+      }
+    };
+    verifySession();
+  }, [sessionId]);
+
+  // Persist messages whenever they change
+  useEffect(() => {
+    if (isSessionVerified) {
+      localStorage.setItem(`orca_chat_history_${sessionId}`, JSON.stringify(messages));
+    }
+  }, [messages, sessionId, isSessionVerified]);
+
+  const handleNewChat = () => {
+    const newId = `sess_${Math.random().toString(36).substring(2, 9)}`;
+    setSessionId(newId);
+    localStorage.setItem("orca_session", newId);
+    setMessages([]);
+    setTraceSteps([]);
+  };
 
   useEffect(() => {
     localStorage.setItem("orca_session", sessionId);
@@ -142,6 +184,13 @@ export default function ChatPanel() {
           </svg>
           Assistant
         </div>
+        <button className="btn-new-chat" onClick={handleNewChat} aria-label="Start new chat">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          New Chat
+        </button>
       </div>
 
       <div className="chat-history" ref={chatHistoryRef}>

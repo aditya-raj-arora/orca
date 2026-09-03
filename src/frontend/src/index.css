@@ -141,14 +141,19 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
-  background-color: var(--color-safe);
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  min-height: 6px;
+  flex-shrink: 0;
   border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--color-safe-faded);
+  background: var(--color-safe);
+  box-shadow: 0 0 8px var(--color-safe);
+  animation: pulse-safe 2s infinite alternate;
 }
 
-.theme-toggle {
+.theme-toggle,
+.mobile-view-toggle {
   background: transparent;
   border: none;
   color: var(--color-text-muted);
@@ -157,11 +162,23 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
   justify-content: center;
   padding: 0.5rem;
-  border-radius: 50%;
+  border-radius: 99px;
   transition: all 0.2s ease;
 }
 
-.theme-toggle:hover {
+.mobile-view-toggle {
+  display: none; /* Hidden on desktop */
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.theme-toggle:hover,
+.mobile-view-toggle:hover {
   color: var(--color-text-main);
   background: var(--color-surface-hover);
 }
@@ -194,10 +211,28 @@ h1, h2, h3, h4, h5, h6 {
   .app-header {
     padding: 1rem;
   }
+  .app-header h1 {
+    font-size: 1.25rem;
+  }
+  .app-subtitle {
+    display: none; /* Hide subtitle to save space, keep ORCA */
+  }
+  .mobile-view-toggle {
+    display: flex; /* Show toggle on mobile */
+  }
+  
   .main-content {
     grid-template-columns: 1fr;
-    grid-template-rows: 50dvh 50dvh;
+    grid-template-rows: 1fr; /* Only one element takes the full height */
     padding: 0 1rem 1rem 1rem;
-    gap: 1rem;
+    gap: 0;
+  }
+  
+  /* Toggle logic */
+  .main-content.show-chat .map-trace-container {
+    display: none !important;
+  }
+  .main-content.show-map .chat-panel-container {
+    display: none !important;
   }
 }

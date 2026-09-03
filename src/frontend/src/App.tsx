@@ -4,6 +4,7 @@ import TraceViewer from "./components/TraceViewer/TraceViewer";
 import { useState, useEffect } from "react";
 
 export default function App() {
+  const [showMobileMap, setShowMobileMap] = useState(false);
   const [isDark, setIsDark] = useState(() => {
     return localStorage.getItem("orca_theme") === "dark";
   });
@@ -17,6 +18,15 @@ export default function App() {
       localStorage.setItem("orca_theme", "light");
     }
   }, [isDark]);
+
+  // Fix for Leaflet map glitching when toggled from display: none
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [showMobileMap]);
+
   return (
     <div className="app-layout">
       <header className="app-header">
@@ -31,6 +41,30 @@ export default function App() {
         </div>
 
         <div className="header-right">
+          <button 
+            className="mobile-view-toggle" 
+            onClick={() => setShowMobileMap(!showMobileMap)}
+            aria-label="Toggle Map View"
+          >
+            {showMobileMap ? (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span>Chat</span>
+              </>
+            ) : (
+              <>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"></polygon>
+                  <line x1="9" y1="3" x2="9" y2="21"></line>
+                  <line x1="15" y1="3" x2="15" y2="21"></line>
+                </svg>
+                <span>Map</span>
+              </>
+            )}
+          </button>
+
           <button className="theme-toggle" onClick={() => setIsDark(!isDark)} aria-label="Toggle theme">
             {isDark ? (
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -55,7 +89,7 @@ export default function App() {
         </div>
       </header>
       
-      <div className="main-content">
+      <div className={`main-content ${showMobileMap ? 'show-map' : 'show-chat'}`}>
         <div className="glass-panel chat-panel-container">
           <ChatPanel />
         </div>
