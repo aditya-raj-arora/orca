@@ -21,7 +21,7 @@ openai>=1.40
 
 # Data / geospatial (owner P3, P4)
 httpx>=0.28.1
-shapely>=2.0
+shapely>=2.1.2
 
 # Persistence (owner P4)
 sqlalchemy[asyncio]>=2.0
