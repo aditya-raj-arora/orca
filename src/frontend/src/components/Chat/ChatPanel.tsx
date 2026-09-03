@@ -26,7 +26,7 @@ export default function ChatPanel() {
   const [traceSteps, setTraceSteps] = useState<string[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
 
   const [sessionId] = useState(() => {
     return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
@@ -67,8 +67,10 @@ export default function ChatPanel() {
   }, [sessionId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (chatHistoryRef.current) {
+      chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+    }
+  }, [messages, traceSteps]);
 
   const handleSendText = () => {
     if (!inputText.trim() || isProcessing) return;
@@ -131,7 +133,7 @@ export default function ChatPanel() {
 
   return (
     <section className="chat-container" aria-label="Conversation">
-      <div className="chat-history">
+      <div className="chat-history" ref={chatHistoryRef}>
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.sender}`}>
             {m.verdict && (
@@ -150,7 +152,6 @@ export default function ChatPanel() {
             ))}
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       <div className="chat-input-area">
