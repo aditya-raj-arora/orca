@@ -3,7 +3,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.8
 pydantic-settings>=2.4
-websockets>=13.0
+websockets>=17.1
 
 # Orchestration — pinned >=1.2 to match the version orchestration/graph.py's
 # fan-out/fan-in state-merge reducers were actually built and tested against
