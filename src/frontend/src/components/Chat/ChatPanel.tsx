@@ -83,6 +83,11 @@ export default function ChatPanel() {
     setInputText("");
   };
 
+  const handleStopProcess = () => {
+    setIsProcessing(false);
+    // Future: send abort signal to backend if supported
+  };
+
   const toggleRecording = async () => {
     if (isRecording) {
       mediaRecorderRef.current?.stop();
@@ -177,8 +182,18 @@ export default function ChatPanel() {
           onKeyDown={(e) => e.key === "Enter" && handleSendText()}
           aria-label="Message input"
         />
-        <button className="btn-icon" onClick={handleSendText} disabled={isProcessing} aria-label="Send message">
-          ➤
+        <button 
+          className={`btn-icon ${isProcessing ? "stop-btn" : ""}`} 
+          onClick={isProcessing ? handleStopProcess : handleSendText} 
+          aria-label={isProcessing ? "Stop processing" : "Send message"}
+        >
+          {isProcessing ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12"></rect>
+            </svg>
+          ) : (
+            "➤"
+          )}
         </button>
       </div>
     </section>
