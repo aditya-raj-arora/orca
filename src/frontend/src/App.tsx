@@ -1,28 +1,60 @@
-/**
- * Top-level layout: chat panel + map panel + agent-trace panel.
- *
- * Owners: P5 (Chat, split left) + P6 (Map/Trace, split right) — split layout
- * ownership matches CODEOWNERS. Coordinate on the shared shell below rather
- * than each rewriting App.tsx independently.
- *
- * Reference: HLD v1.0 §3 "Web Client" row, FR-UI-1 to FR-UI-4.
- *
- * (Trivial edit — verifying the CI -> deploy-frontend gate end-to-end.)
- */
 import ChatPanel from "./components/Chat/ChatPanel";
 import MapPanel from "./components/Map/MapPanel";
 import TraceViewer from "./components/TraceViewer/TraceViewer";
+import { useState, useEffect } from "react";
 
 export default function App() {
-  // TODO(P5/P6): lift shared session/query state up here (or into a context /
-  // small store in src/state/) once ChatPanel needs to trigger MapPanel and
-  // TraceViewer updates from the same WebSocket stream (LLD §5.2).
+  const [isDark, setIsDark] = useState(() => {
+    return localStorage.getItem("orca_theme") === "dark";
+  });
+
+  useEffect(() => {
+    if (isDark) {
+      document.body.classList.add("dark");
+      localStorage.setItem("orca_theme", "dark");
+    } else {
+      document.body.classList.remove("dark");
+      localStorage.setItem("orca_theme", "light");
+    }
+  }, [isDark]);
   return (
     <div className="app-layout">
       <header className="app-header">
-        <h1>ORCA</h1>
-        <span className="subtitle">Marine Intelligence</span>
+        <div className="header-left">
+          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{color: "var(--color-primary)"}}>
+            <path d="M2 6c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 3c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 3"></path>
+            <path d="M2 12c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 9c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 9"></path>
+            <path d="M2 18c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 15c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 15"></path>
+          </svg>
+          <h1>ORCA</h1>
+          <span className="subtitle">Marine Assistant</span>
+        </div>
+
+        <div className="header-right">
+          <button className="theme-toggle" onClick={() => setIsDark(!isDark)} aria-label="Toggle theme">
+            {isDark ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+            )}
+          </button>
+          <div className="status-dot" style={{marginLeft: '0.5rem'}}></div>
+          <span>System Online</span>
+        </div>
       </header>
+      
       <div className="main-content">
         <div className="glass-panel chat-panel-container">
           <ChatPanel />

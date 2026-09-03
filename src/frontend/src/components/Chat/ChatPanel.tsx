@@ -1,11 +1,3 @@
-/**
- * Conversational chat interface — voice + text input/output, multi-turn
- * history display.
- *
- * Owner: P5 (Frontend Engineer, Core UI).
- * Implements: FR-UI-1, FR-UI-4.
- * Reference: HLD v1.0 §3 "Web Client", LLD v1.0 §5.2 (WebSocket message shapes).
- */
 import { useEffect, useState, useRef } from "react";
 import { wsClient } from "../../api/wsClient";
 import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
@@ -57,7 +49,7 @@ export default function ChatPanel() {
         setIsProcessing(false);
         setMessages((prev) => [
           ...prev,
-          { id: Date.now().toString(), sender: "system", text: `Error: ${msg.message}` },
+          { id: Date.now().toString(), sender: "system", text: `Sorry, I ran into an error: ${msg.message}` },
         ]);
       } else if (msg.type === "trace_update") {
         setTraceSteps((prev) => [...prev, msg.step]);
@@ -73,7 +65,18 @@ export default function ChatPanel() {
   }, [messages, traceSteps]);
 
   const handleSendText = () => {
-    if (!inputText.trim() || isProcessing) return;
+    const trimmedInput = inputText.trim();
+    if (!trimmedInput || isProcessing) return;
+
+    if (trimmedInput === "/" || trimmedInput.length < 2) {
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), sender: "user", text: inputText },
+        { id: (Date.now() + 1).toString(), sender: "system", text: "I didn't quite catch that. Could you ask a full question?" }
+      ]);
+      setInputText("");
+      return;
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -87,7 +90,6 @@ export default function ChatPanel() {
 
   const handleStopProcess = () => {
     setIsProcessing(false);
-    // Future: send abort signal to backend if supported
   };
 
   const toggleRecording = async () => {
@@ -133,69 +135,115 @@ export default function ChatPanel() {
 
   return (
     <section className="chat-container" aria-label="Conversation">
+      <div className="chat-panel-header">
+        <div className="cph-title">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{color: "var(--color-primary)"}}>
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          Assistant
+        </div>
+      </div>
+
       <div className="chat-history" ref={chatHistoryRef}>
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.sender}`}>
-            {m.verdict && (
-              <div className={`verdict-banner ${m.verdict}`} aria-label={`Verdict: ${m.verdict}`}>
-                {m.verdict}
+            {m.sender === "system" ? (
+              <div className="sys-msg-container">
+                <div className="sys-avatar">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+                    <line x1="9" y1="9" x2="9.01" y2="9"></line>
+                    <line x1="15" y1="9" x2="15.01" y2="9"></line>
+                  </svg>
+                </div>
+                <div className="sys-content">
+                  {m.verdict && (
+                    <div className={`verdict-banner ${m.verdict}`} aria-label={`Verdict: ${m.verdict}`}>
+                      {m.verdict}
+                    </div>
+                  )}
+                  <div>{m.text}</div>
+                </div>
               </div>
+            ) : (
+              <div>{m.text}</div>
             )}
-            <div>{m.text}</div>
           </div>
         ))}
         {traceSteps.length > 0 && (
-          <div className="chat-message system trace-progress" aria-live="polite" aria-label="Agent progress">
-            <div className="trace-label">Processing…</div>
-            {traceSteps.map((step, i) => (
-              <div key={i} className="trace-step">{step}</div>
-            ))}
+          <div className="chat-message system">
+             <div className="sys-msg-container">
+                <div className="sys-avatar">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+                    <line x1="9" y1="9" x2="9.01" y2="9"></line>
+                    <line x1="15" y1="9" x2="15.01" y2="9"></line>
+                  </svg>
+                </div>
+                <div className="sys-content">
+                  <div className="trace-progress" aria-live="polite" aria-label="Agent progress">
+                    <div className="trace-label">Thinking...</div>
+                    {traceSteps.map((step, i) => (
+                      <div key={i} className="trace-step">{step}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
           </div>
         )}
       </div>
 
       <div className="chat-input-area">
-        <button
-          className={`btn-icon ${isRecording ? "recording" : ""}`}
-          onClick={toggleRecording}
-          disabled={isProcessing}
-          aria-label={isRecording ? "Stop recording" : "Start recording"}
-        >
-          {isRecording ? (
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12"></rect>
-            </svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              <line x1="12" y1="19" x2="12" y2="22"></line>
-            </svg>
-          )}
-        </button>
-        <input
-          type="text"
-          className="chat-input"
-          placeholder="Ask a question..."
-          value={inputText}
-          disabled={isProcessing}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSendText()}
-          aria-label="Message input"
-        />
-        <button 
-          className={`btn-icon ${isProcessing ? "stop-btn" : ""}`} 
-          onClick={isProcessing ? handleStopProcess : handleSendText} 
-          aria-label={isProcessing ? "Stop processing" : "Send message"}
-        >
-          {isProcessing ? (
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12"></rect>
-            </svg>
-          ) : (
-            "➤"
-          )}
-        </button>
+        <div className="chat-input-container">
+          <button
+            className={`btn-icon ${isRecording ? "recording" : ""}`}
+            onClick={toggleRecording}
+            disabled={isProcessing}
+            aria-label={isRecording ? "Stop recording" : "Start recording"}
+          >
+            {isRecording ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12"></rect>
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+              </svg>
+            )}
+          </button>
+          
+          <input
+            type="text"
+            className="chat-input"
+            placeholder="Ask ORCA a question..."
+            value={inputText}
+            disabled={isProcessing}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSendText()}
+            aria-label="Message input"
+          />
+          
+          <button 
+            className={`btn-icon btn-send ${isProcessing ? "stop-btn" : ""}`} 
+            onClick={isProcessing ? handleStopProcess : handleSendText} 
+            aria-label={isProcessing ? "Stop processing" : "Send message"}
+          >
+            {isProcessing ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12"></rect>
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
     </section>
   );
