@@ -28,7 +28,7 @@ jobs:
     if: github.actor != 'dependabot[bot]'
     steps:
       - name: Verify PR references a requirement or design section
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = context.payload.pull_request.title || "";
