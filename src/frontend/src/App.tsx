@@ -1,22 +1,39 @@
-/**
- * Top-level layout: chat panel + map panel + agent-trace panel.
- *
- * Owners: P5 (Chat, split left) + P6 (Map/Trace, split right) — split layout
- * ownership matches CODEOWNERS. Coordinate on the shared shell below rather
- * than each rewriting App.tsx independently.
- *
- * Reference: HLD v1.0 §3 "Web Client" row, FR-UI-1 to FR-UI-4.
- *
- * (Trivial edit — verifying the CI -> deploy-frontend gate end-to-end.)
- */
+import { useState, useEffect } from "react";
 import ChatPanel from "./components/Chat/ChatPanel";
-import MapPanel from "./components/Map/MapPanel";
+import MapPanel, { MarkerData, ZoneData } from "./components/Map/MapPanel";
 import TraceViewer from "./components/TraceViewer/TraceViewer";
 
 export default function App() {
-  // TODO(P5/P6): lift shared session/query state up here (or into a context /
-  // small store in src/state/) once ChatPanel needs to trigger MapPanel and
-  // TraceViewer updates from the same WebSocket stream (LLD §5.2).
+  const [markers, setMarkers] = useState<MarkerData[]>([]);
+  const [zones, setZones] = useState<ZoneData[]>([]);
+
+  useEffect(() => {
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsHost = window.location.hostname || "localhost";
+    const wsPort = "8000";
+    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws`;
+
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.markers) {
+          setMarkers(data.markers);
+        }
+        if (data.zones) {
+          setZones(data.zones);
+        }
+      } catch (err) {
+        console.error("Failed to parse WebSocket message", err);
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
   return (
     <div className="app-layout">
       <header className="app-header">
@@ -28,7 +45,7 @@ export default function App() {
           <ChatPanel />
         </div>
         <div className="glass-panel map-trace-container">
-          <MapPanel />
+          <MapPanel markers={markers} zones={zones} />
           <TraceViewer />
         </div>
       </div>
