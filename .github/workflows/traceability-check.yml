@@ -12,6 +12,10 @@
 # [no-req] is an explicit, visible escape hatch rather than a silent
 # exemption — it still shows up in `git log`/PR search, so it stays
 # reviewable, unlike simply disabling the check for certain paths.
+#
+# Dependabot-authored PRs are skipped outright: their titles/bodies are
+# templated by GitHub and not something we control per-PR, and a version
+# bump is definitionally a [no-req] change (see .github/dependabot.yml).
 name: traceability-check
 
 on:
@@ -21,6 +25,7 @@ on:
 jobs:
   check-requirement-tag:
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     steps:
       - name: Verify PR references a requirement or design section
         uses: actions/github-script@v7
