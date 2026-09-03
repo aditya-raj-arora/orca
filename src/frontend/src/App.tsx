@@ -19,12 +19,18 @@ export default function App() {
   // TraceViewer updates from the same WebSocket stream (LLD §5.2).
   return (
     <div className="app-layout">
-      <div className="glass-panel chat-panel-container">
-        <ChatPanel />
-      </div>
-      <div className="glass-panel map-trace-container">
-        <MapPanel />
-        <TraceViewer />
+      <header className="app-header">
+        <h1>ORCA</h1>
+        <span className="subtitle">Marine Intelligence</span>
+      </header>
+      <div className="main-content">
+        <div className="glass-panel chat-panel-container">
+          <ChatPanel />
+        </div>
+        <div className="glass-panel map-trace-container">
+          <MapPanel />
+          <TraceViewer />
+        </div>
       </div>
     </div>
   );
