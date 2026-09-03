@@ -22,6 +22,7 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [traceSteps, setTraceSteps] = useState<string[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -37,6 +38,7 @@ export default function ChatPanel() {
     wsClient.connect(sessionId, (msg: ServerMessage) => {
       if (msg.type === "final_response") {
         setTraceSteps([]);
+        setIsProcessing(false);
         setMessages((prev) => [
           ...prev,
           {
@@ -52,6 +54,7 @@ export default function ChatPanel() {
         }
       } else if (msg.type === "error") {
         setTraceSteps([]);
+        setIsProcessing(false);
         setMessages((prev) => [
           ...prev,
           { id: Date.now().toString(), sender: "system", text: `Error: ${msg.message}` },
@@ -68,13 +71,14 @@ export default function ChatPanel() {
   }, [messages]);
 
   const handleSendText = () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || isProcessing) return;
 
     setMessages((prev) => [
       ...prev,
       { id: Date.now().toString(), sender: "user", text: inputText },
     ]);
 
+    setIsProcessing(true);
     wsClient.send({ type: "query", mode: "text", text: inputText });
     setInputText("");
   };
@@ -105,6 +109,7 @@ export default function ChatPanel() {
                 ...prev,
                 { id: Date.now().toString(), sender: "user", text: "\uD83C\uDFA4 (Voice Query)" },
               ]);
+              setIsProcessing(true);
               wsClient.send({ type: "query", mode: "voice", audio_base64: base64data });
             }
           };
@@ -147,6 +152,7 @@ export default function ChatPanel() {
         <button
           className={`btn-icon ${isRecording ? "recording" : ""}`}
           onClick={toggleRecording}
+          disabled={isProcessing}
           aria-label={isRecording ? "Stop recording" : "Start recording"}
         >
           {isRecording ? (
@@ -166,11 +172,12 @@ export default function ChatPanel() {
           className="chat-input"
           placeholder="Ask a question..."
           value={inputText}
+          disabled={isProcessing}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSendText()}
           aria-label="Message input"
         />
-        <button className="btn-icon" onClick={handleSendText} aria-label="Send message">
+        <button className="btn-icon" onClick={handleSendText} disabled={isProcessing} aria-label="Send message">
           ➤
         </button>
       </div>
