@@ -31,5 +31,5 @@ geoalchemy2>=0.15
 # Dev / CI tooling
 ruff>=0.6
 pytest>=8.3
-pytest-asyncio>=0.24
+pytest-asyncio>=1.4.0
 httpx>=0.28.1  # also used as the FastAPI test client transport
