@@ -22,10 +22,11 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [traceSteps, setTraceSteps] = useState<string[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
 
   const [sessionId] = useState(() => {
     return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
@@ -37,6 +38,7 @@ export default function ChatPanel() {
     wsClient.connect(sessionId, (msg: ServerMessage) => {
       if (msg.type === "final_response") {
         setTraceSteps([]);
+        setIsProcessing(false);
         setMessages((prev) => [
           ...prev,
           {
@@ -52,6 +54,7 @@ export default function ChatPanel() {
         }
       } else if (msg.type === "error") {
         setTraceSteps([]);
+        setIsProcessing(false);
         setMessages((prev) => [
           ...prev,
           { id: Date.now().toString(), sender: "system", text: `Error: ${msg.message}` },
@@ -64,19 +67,27 @@ export default function ChatPanel() {
   }, [sessionId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (chatHistoryRef.current) {
+      chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+    }
+  }, [messages, traceSteps]);
 
   const handleSendText = () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || isProcessing) return;
 
     setMessages((prev) => [
       ...prev,
       { id: Date.now().toString(), sender: "user", text: inputText },
     ]);
 
+    setIsProcessing(true);
     wsClient.send({ type: "query", mode: "text", text: inputText });
     setInputText("");
+  };
+
+  const handleStopProcess = () => {
+    setIsProcessing(false);
+    // Future: send abort signal to backend if supported
   };
 
   const toggleRecording = async () => {
@@ -105,6 +116,7 @@ export default function ChatPanel() {
                 ...prev,
                 { id: Date.now().toString(), sender: "user", text: "\uD83C\uDFA4 (Voice Query)" },
               ]);
+              setIsProcessing(true);
               wsClient.send({ type: "query", mode: "voice", audio_base64: base64data });
             }
           };
@@ -121,7 +133,7 @@ export default function ChatPanel() {
 
   return (
     <section className="chat-container" aria-label="Conversation">
-      <div className="chat-history">
+      <div className="chat-history" ref={chatHistoryRef}>
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.sender}`}>
             {m.verdict && (
@@ -140,13 +152,13 @@ export default function ChatPanel() {
             ))}
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       <div className="chat-input-area">
         <button
           className={`btn-icon ${isRecording ? "recording" : ""}`}
           onClick={toggleRecording}
+          disabled={isProcessing}
           aria-label={isRecording ? "Stop recording" : "Start recording"}
         >
           {isRecording ? (
@@ -166,12 +178,23 @@ export default function ChatPanel() {
           className="chat-input"
           placeholder="Ask a question..."
           value={inputText}
+          disabled={isProcessing}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSendText()}
           aria-label="Message input"
         />
-        <button className="btn-icon" onClick={handleSendText} aria-label="Send message">
-          ➤
+        <button 
+          className={`btn-icon ${isProcessing ? "stop-btn" : ""}`} 
+          onClick={isProcessing ? handleStopProcess : handleSendText} 
+          aria-label={isProcessing ? "Stop processing" : "Send message"}
+        >
+          {isProcessing ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12"></rect>
+            </svg>
+          ) : (
+            "➤"
+          )}
         </button>
       </div>
     </section>

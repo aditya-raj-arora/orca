@@ -6,7 +6,56 @@
     <title>ORCA — Marine Safety Assistant</title>
   </head>
   <body>
+    <style>
+      #splash-screen {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        background-color: #020617;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #06b6d4;
+        font-family: system-ui, -apple-system, sans-serif;
+        z-index: 9999;
+      }
+      .orca-logo {
+        font-size: 3rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        animation: pulse 1.5s infinite alternate;
+      }
+      .splash-text {
+        margin-top: 1rem;
+        font-size: 1rem;
+        color: #94a3b8;
+      }
+      @keyframes pulse {
+        0% { opacity: 0.6; transform: scale(0.98); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+    </style>
+    <!-- Splash screen is now outside root so React doesn't instantly overwrite it -->
+    <div id="splash-screen">
+      <div class="orca-logo">ORCA</div>
+      <div class="splash-text">Marine Intelligence Loading...</div>
+    </div>
+    
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Keep splash screen visible for at least 1.5 seconds, then fade out -->
+    <script>
+      window.addEventListener("load", () => {
+        setTimeout(() => {
+          const splash = document.getElementById("splash-screen");
+          if (splash) {
+            splash.style.transition = "opacity 0.5s ease";
+            splash.style.opacity = "0";
+            setTimeout(() => splash.remove(), 500);
+          }
+        }, 1500);
+      });
+    </script>
   </body>
 </html>
