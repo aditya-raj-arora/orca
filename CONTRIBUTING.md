@@ -13,6 +13,15 @@ Every unit of work — issue, branch, commit, PR — must be traceable back to a
 section (`LLD §2.6`, `HLD §3`). If you can't name the requirement your change
 satisfies, stop and check `docs/ORCA_SRS_v1.1.docx` §3–5 before writing code.
 
+For a genuinely non-functional change — team/ownership metadata, a typo fix,
+CI config, anything the SRS/HLD/LLD simply don't govern — reference this
+section (`CONTRIBUTING.md §1`) or the relevant process section instead
+(e.g. `CONTRIBUTING.md §8` for an ownership-table update), or tag the PR
+`[no-req]` explicitly. The CI traceability check (`.github/workflows/
+traceability-check.yml`) accepts all of these; the point is to never merge a
+PR with *no* traceability statement at all, not to force a fabricated
+requirement ID onto something that isn't one.
+
 This traceability is what lets us answer, at any point, "why does this code exist"
 and "is requirement X actually implemented" — both of which matter for the SIH
 evaluation and for catching scope drift before demo day.

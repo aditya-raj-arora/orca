@@ -1,36 +1,104 @@
-/**
- * Interactive map: queried location, PFZ zone(s), geofencing boundaries.
- *
- * Owner: P6 (Frontend Engineer, Map/Trace + QA/Integration Lead).
- * Implements: FR-UI-2.
- * Reference: HLD v1.0 §6 (Leaflet), LLD v1.0 §5.2 (map_payload shape in the
- * final_response message — keep this in sync with
- * src/backend/app/schemas/synthesis.py MapPayload).
- */
-import { MapContainer, TileLayer } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polygon } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import L from "leaflet";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
-const DEFAULT_CENTER: [number, number] = [10.0, 76.3]; // Kochi-ish, placeholder
+delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: () => string })._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+});
 
-export default function MapPanel() {
-  // TODO(P6):
-  //   1. Accept `markers` and `zones` (from ComposedResponse.map_payload,
-  //      LLD §5.2) as props once wired up from App.tsx's session state.
-  //   2. Render markers for queried location + nearest PFZ centroid
-  //      (FR-OCEAN-3).
-  //   3. Render geofence zone overlays (MPA polygons, IMBL buffer) with a
-  //      visually distinct, unmissable style for violations (FR-GEO-3 —
-  //      this must be as unambiguous on the map as it is in the text).
-  //   4. Add a text-equivalent legend/description for each layer (NFR-USE-3
-  //      accessibility requirement — map content isn't voice/text-readable by
-  //      default).
+export interface MarkerData {
+  id: string;
+  lat: number;
+  lng: number;
+  label: string;
+}
+
+export interface ZoneData {
+  id: string;
+  coordinates: [number, number][];
+  label: string;
+  zoneType?: 'PFZ' | 'IMBL' | 'MPA';
+  isViolation?: boolean;
+  isProximity?: boolean;
+}
+
+interface MapPanelProps {
+  markers?: MarkerData[];
+  zones?: ZoneData[];
+}
+
+const DEFAULT_CENTER: [number, number] = [10.0, 76.3];
+
+export default function MapPanel({
+  markers = [],
+  zones = []
+}: MapPanelProps) {
+  const getZoneStyle = (zone: ZoneData) => {
+    if (zone.isViolation) {
+      return {
+        color: "#dc2626",
+        fillColor: "#ef4444",
+        fillOpacity: 0.5,
+        weight: 3,
+        dashArray: "6, 6"
+      };
+    }
+    if (zone.isProximity) {
+      return {
+        color: "#f59e0b",
+        fillColor: "#fbbf24",
+        fillOpacity: 0.4,
+        weight: 2
+      };
+    }
+    if (zone.zoneType === 'PFZ') {
+      return {
+        color: "#10b981",
+        fillColor: "#34d399",
+        fillOpacity: 0.25,
+        weight: 2
+      };
+    }
+    return {
+      color: "#3b82f6",
+      fillColor: "#60a5fa",
+      fillOpacity: 0.2,
+      weight: 2
+    };
+  };
+
   return (
-    <MapContainer center={DEFAULT_CENTER} zoom={7} style={{ height: "100%", width: "100%" }}>
+    <MapContainer center={DEFAULT_CENTER} zoom={8} style={{ height: "100%", width: "100%" }}>
       <TileLayer
-        attribution='&copy; OpenStreetMap contributors'
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {/* TODO(P6): marker/zone layers go here */}
+
+      {markers.map((marker) => (
+        <Marker key={marker.id} position={[marker.lat, marker.lng]}>
+          <Popup>{marker.label}</Popup>
+        </Marker>
+      ))}
+
+      {zones.map((zone) => (
+        <Polygon key={zone.id} positions={zone.coordinates} pathOptions={getZoneStyle(zone)}>
+          <Popup>
+            <div>
+              <strong>{zone.label}</strong>
+              <br />
+              Type: {zone.zoneType || 'Standard Zone'}
+              {zone.isViolation && <span style={{ color: 'red', display: 'block' }}>Status: Violation Detected</span>}
+              {zone.isProximity && <span style={{ color: 'orange', display: 'block' }}>Status: Proximity Warning</span>}
+            </div>
+          </Popup>
+        </Polygon>
+      ))}
     </MapContainer>
   );
 }

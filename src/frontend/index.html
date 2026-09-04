@@ -4,9 +4,124 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ORCA — Marine Safety Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
   </head>
   <body>
+    <script>
+      if (localStorage.getItem("orca_theme") === "dark") {
+        document.body.classList.add("dark");
+      }
+    </script>
+    <style>
+      #splash-screen {
+        position: fixed;
+        top: 0; left: 0; width: 100vw; height: 100vh;
+        background-color: #fafaf9;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #3b82f6;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        z-index: 9999;
+      }
+      body.dark #splash-screen {
+        background-color: #1c1917;
+        color: #fafaf9;
+      }
+      .splash-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      .orca-logo-container {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+      }
+      .orca-svg {
+        color: #3b82f6;
+        width: 48px;
+        height: 48px;
+        animation: float 3s ease-in-out infinite;
+      }
+      .orca-logo {
+        font-size: 3.5rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #1c1917;
+      }
+      body.dark .orca-logo {
+        color: #fafaf9;
+      }
+      .splash-text {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #78716c;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      body.dark .splash-text {
+        color: #a8a29e;
+      }
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(59, 130, 246, 0.2);
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-8px); }
+        100% { transform: translateY(0px); }
+      }
+      @keyframes fadeInUp {
+        0% { opacity: 0; transform: translateY(20px) scale(0.98); }
+        100% { opacity: 1; transform: translateY(0) scale(1); }
+      }
+    </style>
+    <!-- Splash screen is now outside root so React doesn't instantly overwrite it -->
+    <div id="splash-screen">
+      <div class="splash-content">
+        <div class="orca-logo-container">
+          <svg class="orca-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 6c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 3c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 3"></path>
+            <path d="M2 12c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 9c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 9"></path>
+            <path d="M2 18c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 15c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 15"></path>
+          </svg>
+          <div class="orca-logo">ORCA</div>
+        </div>
+        <div class="splash-text">
+          <div class="spinner"></div>
+          Initializing systems...
+        </div>
+      </div>
+    </div>
+    
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Keep splash screen visible for at least 1.5 seconds, then fade out -->
+    <script>
+      window.addEventListener("load", () => {
+        setTimeout(() => {
+          const splash = document.getElementById("splash-screen");
+          if (splash) {
+            splash.style.transition = "opacity 0.5s ease";
+            splash.style.opacity = "0";
+            setTimeout(() => splash.remove(), 500);
+          }
+        }, 1500);
+      });
+    </script>
   </body>
 </html>

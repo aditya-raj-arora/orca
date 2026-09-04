@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import operator
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -42,6 +44,7 @@ from app.data_access.incois_adapter import INCOISAdapter
 from app.data_access.weather_adapter import WeatherDataAdapter
 from app.orchestration.planner_agent import NormalizedQuery, PlannerAgent
 from app.orchestration.synthesis_agent import SynthesisAgent
+from app.schemas.common import LatLon, TimeWindow
 from app.schemas.synthesis import ComposedResponse, ExecutionPlan
 
 logger = logging.getLogger(__name__)
@@ -118,10 +121,16 @@ def _weather_node(agent: WeatherAgent):
         if not _agent_requested(state, "weather"):
             return {}
         location = _location_for(state, "weather")
+        if location is None:
+            return {
+                "results": {"weather": _unavailable_weather_result()},
+                "trace": ["Weather Agent: location not resolved to coordinates (unavailable)"],
+            }
+        window = _time_window_for(state, "weather")
         result, trace_line = await _call_bounded(
             agent.get_conditions,
             location,
-            None,  # TimeWindow — TODO(P1): resolve from Planner's time_window_text
+            window,
             unavailable=_unavailable_weather_result(),
             agent_label="Weather Agent",
         )
@@ -135,13 +144,35 @@ def _ocean_node(agent: OceanAgent):
         if not _agent_requested(state, "ocean"):
             return {}
         location = _location_for(state, "ocean")
-        result, trace_line = await _call_bounded(
-            agent.get_nearest_pfz,
-            location,
-            unavailable=None,
-            agent_label="Ocean Agent",
+        if location is None:
+            return {
+                "results": {"ocean": None, "ocean_params": None},
+                "trace": ["Ocean Agent: location not resolved to coordinates (unavailable)"],
+            }
+        # PFZ (Risk-relevant, FR-OCEAN-1/3/4) and SST/chlorophyll
+        # (descriptive only, FR-OCEAN-2 — not consumed by Risk/Safety's
+        # Figure 2 tree, only by Synthesis) are two independent calls on the
+        # same agent instance; run them concurrently rather than serially so
+        # one "ocean" node stays within AGENT_TIMEOUT_SECONDS like every
+        # other specialist, not double it.
+        (pfz_result, pfz_trace), (params_result, params_trace) = await asyncio.gather(
+            _call_bounded(
+                agent.get_nearest_pfz,
+                location,
+                unavailable=None,
+                agent_label="Ocean Agent (PFZ)",
+            ),
+            _call_bounded(
+                agent.get_ocean_parameters,
+                location,
+                unavailable=_unavailable_ocean_params(),
+                agent_label="Ocean Agent (SST/chlorophyll)",
+            ),
         )
-        return {"results": {"ocean": result}, "trace": [trace_line]}
+        return {
+            "results": {"ocean": pfz_result, "ocean_params": params_result},
+            "trace": [pfz_trace, params_trace],
+        }
 
     return _node
 
@@ -151,6 +182,11 @@ def _geofencing_node(agent: GeofencingAgent):
         if not _agent_requested(state, "geofencing"):
             return {}
         location = _location_for(state, "geofencing")
+        if location is None:
+            return {
+                "results": {"geofencing": None},
+                "trace": ["Geofencing Agent: location not resolved to coordinates (unavailable)"],
+            }
         result, trace_line = await _call_bounded(
             agent.check,
             location,
@@ -192,33 +228,131 @@ def _synthesis_node(agent: SynthesisAgent):
             composed = ComposedResponse(text=plan.clarification_prompt or "")
             return {"composed": composed, "trace": ["Synthesis: skipped (clarification requested)"]}
 
-        composed = await asyncio.to_thread(
-            agent.compose, plan, state.get("results", {}), state.get("language", "en")
+        composed, trace_line = await _call_bounded(
+            agent.compose,
+            plan,
+            state.get("results", {}),
+            state.get("language", "en"),
+            unavailable=_unavailable_composed_response(),
+            agent_label="Synthesis Agent",
         )
-        return {"composed": composed, "trace": ["Synthesis: response composed"]}
+        return {"composed": composed, "trace": [trace_line]}
 
     return _node
 
 
-def _location_for(state: GraphState, agent_name: str) -> Any:
-    """TODO(P1): once AgentInvocationRequest payloads are finalized against
-    real agent signatures (they currently carry a plain `location` dict, LLD
-    §2.2's ExecutionPlan, but WeatherAgent/OceanAgent/GeofencingAgent expect
-    a LatLon per their LLD §2.3-2.5 signatures), convert here. Left as a
-    single seam so the conversion logic isn't duplicated across three nodes."""
+def _location_for(state: GraphState, agent_name: str) -> LatLon | None:
+    """Converts the Planner's plain `location` dict (LLD §2.2's ExecutionPlan
+    payload: {"place_name", "lat", "lon"} — planner_agent.py's
+    QueryEntities.as_location_dict()) into the LatLon each specialist agent
+    expects (LLD §2.3-2.5 signatures). Single seam so the conversion logic
+    isn't duplicated across three nodes.
+
+    Resolved at the P1 contract-lock sync (2026-09-01): lat/lon can be None
+    even when location_resolvable is True (the Planner's entity-extraction
+    LLM knows a place name but not its coordinates — there's no geocoding
+    step yet, tracked separately). That must degrade the same way an
+    unavailable agent result does, not raise — callers check for None."""
     plan = state.get("plan")
     if plan is None:
         return None
     for inv in plan.invocations:
         if inv.agent_name == agent_name:
-            return inv.input_payload.get("location")
+            loc = inv.input_payload.get("location") or {}
+            lat, lon = loc.get("lat"), loc.get("lon")
+            if lat is None or lon is None:
+                return None
+            return LatLon(lat=lat, lon=lon)
     return None
+
+
+def _time_window_for(state: GraphState, agent_name: str) -> TimeWindow | None:
+    """Same seam as _location_for, for the Planner's free-text
+    time_window_text (only ever set on the weather invocation's payload —
+    see planner_agent.route_query)."""
+    plan = state.get("plan")
+    if plan is None:
+        return None
+    for inv in plan.invocations:
+        if inv.agent_name == agent_name:
+            return _resolve_time_window(inv.input_payload.get("time_window_text"))
+    return None
+
+
+_DAY_PART_HOURS = {
+    "morning": (6, 12),
+    "afternoon": (12, 17),
+    "evening": (17, 21),
+    "night": (21, 30),  # end > 24 -> wraps into the next day, handled below
+}
+
+
+def _resolve_time_window(text: str | None, now: datetime | None = None) -> TimeWindow | None:
+    """Planner's time_window_text (free-text, e.g. "tomorrow morning") ->
+    a concrete UTC TimeWindow for the Weather Agent's forecast-range call.
+
+    Deliberately conservative (P1 contract-lock decision, 2026-09-01): only
+    recognises today/tomorrow/day-after-tomorrow plus an optional day-part
+    (morning/afternoon/evening/night). Anything else (weekday names, "next
+    week", open-ended ranges) -> None, so the agent falls back to current
+    conditions rather than guessing a window — the "never fabricate" rule
+    (FR-WX-4) extends to date ranges, not just data values. Pure, no I/O —
+    unit-tested directly against sample phrases.
+    """
+    if not text:
+        return None
+    t = text.strip().lower()
+    now = (now or datetime.now(UTC)).replace(minute=0, second=0, microsecond=0)
+
+    if re.search(r"\bday after tomorrow\b", t):
+        day_offset = 2
+    elif re.search(r"\btomorrow\b", t):
+        day_offset = 1
+    elif re.search(r"\b(today|now|right now|currently|tonight)\b", t):
+        day_offset = 0
+    else:
+        return None
+
+    base = now + timedelta(days=day_offset)
+
+    for part, (start_h, end_h) in _DAY_PART_HOURS.items():
+        if re.search(rf"\b{part}\b", t):
+            start = base.replace(hour=start_h % 24)
+            end = base.replace(hour=end_h % 24) + (
+                timedelta(days=1) if end_h >= 24 else timedelta(0)
+            )
+            return TimeWindow(start=start, end=end)
+
+    start = base.replace(hour=0)
+    return TimeWindow(start=start, end=start + timedelta(days=1))
 
 
 def _unavailable_weather_result() -> Any:
     from app.schemas.weather import WeatherResult
 
     return WeatherResult(wind_speed_kmh=0.0, wave_height_m=0.0, status="unavailable")
+
+
+def _unavailable_ocean_params() -> Any:
+    from app.schemas.ocean import OceanParams
+
+    # OceanParams has no status field (FR-OCEAN-2) — unavailability is
+    # represented by None fields, same convention OceanAgent.get_ocean_
+    # parameters() itself uses when INCOIS doesn't publish a value.
+    return OceanParams(sea_surface_temp_c=None, chlorophyll_mg_m3=None)
+
+
+def _unavailable_composed_response() -> ComposedResponse:
+    """SynthesisAgent.compose() raising or timing out (e.g. NotImplementedError
+    while #14/#9 are still in flight, or a real LLM failure later) must not
+    crash the whole query — same "degrade, don't crash" rule _call_bounded
+    already applies to every other node. No fabricated claims, no citations
+    (there's nothing to cite), and the wording doesn't imply an answer was
+    given (contrast with a genuine INSUFFICIENT_DATA verdict, which IS an
+    answer)."""
+    return ComposedResponse(
+        text="Sorry, I couldn't put together an answer for that just now — please try again."
+    )
 
 
 # ---------------------------------------------------------------------- #

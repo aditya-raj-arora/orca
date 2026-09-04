@@ -30,10 +30,32 @@ class Settings(BaseSettings):
     bhashini_user_id: str = ""
     bhashini_base_url: str = "https://bhashini.gov.in/api"
 
+    # Weather / marine (owner P3, docs/p3-data-source-spike.md §2). All card-free;
+    # only weatherapi_key needs a (free, no-card) key. weather_api_key /
+    # weather_api_base_url are retained but unused — the OpenWeather plan was
+    # dropped.
+    # Blessed as the canonical set at the P1 contract-lock sync (2026-09-01):
+    # weather_forecast_base_url, marine_api_base_url, weatherapi_base_url,
+    # weatherapi_key, gdacs_base_url, incois_geoserver_url, incois_pfz_wfs_url,
+    # ocean_pfz_staleness_hours (see PR #28). render.yaml updated to match —
+    # drops weather_api_key/weather_api_base_url, adds weatherapi_key.
     weather_api_key: str = ""
     weather_api_base_url: str = ""
+    weather_forecast_base_url: str = "https://api.open-meteo.com/v1"
+    marine_api_base_url: str = "https://marine-api.open-meteo.com/v1"
+    weatherapi_base_url: str = "https://api.weatherapi.com/v1"
+    weatherapi_key: str = ""
+    gdacs_base_url: str = "https://www.gdacs.org/xml"
 
     incois_base_url: str = "https://incois.gov.in"
+    incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"
+    incois_pfz_wfs_url: str = "https://incois.gov.in/geoserver/PFZ_Automation/ows"
+    ocean_pfz_staleness_hours: float = 48.0
+    # Demo-resilience (#38 / HLD §9 RISK-1): if the live PFZ WFS is unreachable
+    # and nothing is in the per-day cache, INCOISAdapter serves this bundled
+    # snapshot as status='stale'. Refresh with scripts/refresh_pfz_snapshot.sh.
+    # TODO(P1): confirm at the next contract-lock touch (additive).
+    incois_pfz_snapshot_path: str = "./data/snapshots/pfz_latest.json.gz"
 
     gis_boundary_data_path: str = "./data/gis/imbl_mpa_boundaries.geojson"
     imbl_buffer_km: float = 5.0

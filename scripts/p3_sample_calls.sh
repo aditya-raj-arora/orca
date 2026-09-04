@@ -83,7 +83,38 @@ gfi sst "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 gfi chl "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 
 # ---------------------------------------------------------------------------
-# 3. INCOIS — ERDDAP dataset list (fallback data path for SST/chl)
+# 3. INCOIS — PFZ advisory geometry via GeoServer WFS -> GeoJSON, NO key.
+#    typeName PFZ_Automation:pfzlines. Full feed ~1.3 MB / ~96 MultiLineString
+#    features; we keep a trimmed 3-feature sample. FR-OCEAN-1 / FR-OCEAN-3.
+# ---------------------------------------------------------------------------
+say "INCOIS PFZ advisory lines (WFS -> GeoJSON)"
+_pfz="$(mktemp)"
+if curl -fsS -m 60 \
+  "https://incois.gov.in/geoserver/PFZ_Automation/ows?service=WFS&version=1.1.0&request=GetFeature&typeName=PFZ_Automation:pfzlines&outputFormat=application/json" \
+  -o "$_pfz" \
+  -w "HTTP %{http_code}  %{size_download} bytes (trimmed to 3 features -> pfz_wfs_pfzlines_sample.json)\n"; then
+  python3 - "$_pfz" "$OUT_INCOIS/pfz_wfs_pfzlines_sample.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); fs = d["features"]
+def npts(f):
+    return sum(len(l) for l in f["geometry"]["coordinates"])
+# keep the 3 features with the fewest vertices, FULL geometry — small file,
+# still real coords for the INCOISAdapter parser tests.
+kept = sorted(fs, key=npts)[:3]
+out = {"type": "FeatureCollection",
+       "_note": f"TRIMMED — {len(fs)} features in the live feed; the 3 smallest kept in full",
+       "totalFeatures": d.get("totalFeatures"), "crs": d.get("crs"),
+       "features": kept}
+json.dump(out, open(sys.argv[2], "w"), separators=(",", ":"))  # compact: machine fixture
+open(sys.argv[2], "a").write("\n")
+PY
+else
+  echo "  PFZ WFS FAILED (non-blocking)"
+fi
+rm -f "$_pfz"
+
+# ---------------------------------------------------------------------------
+# 3b. INCOIS — ERDDAP dataset list (fallback data path for SST/chl)
 # ---------------------------------------------------------------------------
 say "INCOIS ERDDAP dataset list"
 curl -fsS -m 45 \
@@ -100,7 +131,7 @@ FORECAST_BASE="${WEATHER_FORECAST_BASE_URL:-https://api.open-meteo.com/v1}"
 MARINE_BASE="${MARINE_API_BASE_URL:-https://marine-api.open-meteo.com/v1}"
 om_fc() { # $1=lat $2=lon $3=label
   curl -fsS -m 30 \
-    "${FORECAST_BASE}/forecast?latitude=$1&longitude=$2&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,visibility&hourly=wind_speed_10m,precipitation,visibility&forecast_days=2&timezone=auto" \
+    "${FORECAST_BASE}/forecast?latitude=$1&longitude=$2&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,visibility,weather_code&timeformat=unixtime&wind_speed_unit=kmh" \
     -o "$OUT_WX/openmeteo_forecast_$3.json" \
     -w "HTTP %{http_code}  forecast @ $3 -> openmeteo_forecast_$3.json\n" \
     || echo "  forecast @ $3 FAILED (non-blocking)"
@@ -115,7 +146,7 @@ om_fc "$KOLLAM_LAT"  "$KOLLAM_LON"  kollam
 # ---------------------------------------------------------------------------
 om_marine() { # $1=lat $2=lon $3=label
   curl -fsS -m 30 \
-    "${MARINE_BASE}/marine?latitude=$1&longitude=$2&current=wave_height,wave_direction,wave_period&hourly=wave_height&forecast_days=2&timezone=auto" \
+    "${MARINE_BASE}/marine?latitude=$1&longitude=$2&current=wave_height,wave_direction,wave_period&timeformat=unixtime" \
     -o "$OUT_WX/openmeteo_marine_$3.json" \
     -w "HTTP %{http_code}  marine @ $3 -> openmeteo_marine_$3.json\n" \
     || echo "  marine @ $3 FAILED (non-blocking)"

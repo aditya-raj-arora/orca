@@ -21,7 +21,7 @@ THIS IS THE SAFETY-CRITICAL COMPONENT OF THE WHOLE SYSTEM.
 from __future__ import annotations
 
 from app.schemas.geofence import GeofenceResult
-from app.schemas.ocean import OceanParams
+from app.schemas.ocean import PFZResult
 from app.schemas.risk import RiskVerdict
 from app.schemas.weather import WeatherResult
 
@@ -31,30 +31,78 @@ class RiskSafetyAgent:
         self,
         weather: WeatherResult | None,
         geofence: GeofenceResult | None,
-        ocean: OceanParams | None,
+        ocean: PFZResult | None,
     ) -> RiskVerdict:
-        """
-        TODO(P4): implement the decision tree from LLD §4.2 / Figure 2. Rough
-        shape (confirm exact order/precedence against the actual flowchart in
-        docs/ORCA_LLD_v1.0.docx before coding):
-          1. If weather is None or weather.status == 'unavailable' -> return
-             INSUFFICIENT_DATA (a safety-relevant input is missing).
-          2. Same check for geofence (geofence is the only agent whose absence
-             on its own should probably be treated as UNSAFE-leaning rather
-             than merely "insufficient" if a query is boundary-relevant —
-             confirm against Figure 2 exactly, do not assume).
-          3. If geofence.within_mpa or geofence.within_imbl_buffer -> verdict
-             is UNSAFE, unconditionally (FR-GEO-4) — this check must run
-             before, and cannot be overridden by, weather being "clear".
-          4. Else combine weather.active_alerts severity into
-             SAFE/CAUTION/UNSAFE per the thresholds in Figure 2.
-          5. Populate `rationale` (human-readable, FR-RISK-2) and
-             `contributing_factors` (list of the specific inputs that drove
-             the verdict, e.g. ["within 3km of MPA 'Gulf of Mannar'"]).
+        """Decision tree per LLD §4.2 / Figure 2.
 
-        Unit test this against fixtures covering: all-clear, weather-only
-        alert, geofence-only violation, both, and each individual agent
-        reporting unavailable — five minimum cases before this is "done"
-        per CONTRIBUTING.md's Definition of Done.
+          1. weather missing/unavailable, OR weather.alerts_source_available
+             is False (P1/P3 contract-lock addendum, 2026-09-01 — both alert
+             sources down means active_alerts == [] is "unknown", not "no
+             alerts", so it must never fall through to step 4 as if it were
+             trustworthy) -> INSUFFICIENT_DATA, never SAFE (NFR-REL-2).
+          2. geofence missing -> INSUFFICIENT_DATA (FR-RISK-3/NFR-REL-2: any
+             missing contributing agent forces INSUFFICIENT_DATA).
+          3. geofence.within_mpa or geofence.within_imbl_buffer -> UNSAFE,
+             unconditionally (FR-GEO-4) — cannot be overridden by weather.
+          4. Else, weather.active_alerts non-empty -> UNSAFE (active
+             severe-weather alerts are non-negotiable, see module docstring);
+             otherwise SAFE.
+
+        ocean (PFZResult | None) is advisory-only (LLD §4.2): its absence
+        never affects the verdict, but a stale advisory is surfaced in the
+        rationale so Synthesis can caveat it.
         """
-        raise NotImplementedError
+        factors: list[str] = []
+
+        if weather is None or weather.status == "unavailable":
+            return RiskVerdict(
+                verdict="INSUFFICIENT_DATA",
+                rationale="Weather data is unavailable, so a safety verdict cannot be given.",
+                contributing_factors=["weather data unavailable"],
+            )
+
+        if not weather.alerts_source_available:
+            return RiskVerdict(
+                verdict="INSUFFICIENT_DATA",
+                rationale=(
+                    "Both severe-weather alert sources are currently unreachable, so "
+                    "whether any alerts are active cannot be confirmed."
+                ),
+                contributing_factors=["weather alert sources unavailable"],
+            )
+
+        if geofence is None:
+            return RiskVerdict(
+                verdict="INSUFFICIENT_DATA",
+                rationale="Geofence data is unavailable, so a safety verdict cannot be given.",
+                contributing_factors=["geofence data unavailable"],
+            )
+
+        if geofence.within_mpa or geofence.within_imbl_buffer:
+            if geofence.within_mpa:
+                factors.append(f"within Marine Protected Area '{geofence.mpa_name}'")
+            if geofence.within_imbl_buffer:
+                factors.append(
+                    f"within {geofence.imbl_distance_km:.1f} km of the IMBL buffer zone"
+                )
+            rationale = (
+                "Location is " + " and ".join(factors)
+                + " — this is a non-negotiable safety boundary."
+            )
+            if ocean is not None and ocean.is_stale:
+                rationale += (
+                    " (Note: PFZ advisory data is stale and was not used in this verdict.)"
+                )
+            return RiskVerdict(verdict="UNSAFE", rationale=rationale, contributing_factors=factors)
+
+        if weather.active_alerts:
+            factors.extend(weather.active_alerts)
+            rationale = "Active weather alert(s): " + "; ".join(weather.active_alerts) + "."
+            if ocean is not None and ocean.is_stale:
+                rationale += " (Note: PFZ advisory data is stale and was not used in this verdict.)"
+            return RiskVerdict(verdict="UNSAFE", rationale=rationale, contributing_factors=factors)
+
+        rationale = "No geofence violations or active weather alerts for this location."
+        if ocean is not None and ocean.is_stale:
+            rationale += " Note: the nearest PFZ advisory is stale — treat it as indicative only."
+        return RiskVerdict(verdict="SAFE", rationale=rationale, contributing_factors=factors)

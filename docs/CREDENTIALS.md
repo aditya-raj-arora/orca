@@ -11,9 +11,9 @@ committed) locally, and in the Render dashboard for deployment (see
 | 1 | `LLM_API_KEY` | P2 | ☐ |
 | 2 | `BHASHINI_API_KEY` / `BHASHINI_USER_ID` | P2 | ☐ |
 | 3 | Weather: `WEATHER_FORECAST_BASE_URL` / `MARINE_API_BASE_URL` / `GDACS_BASE_URL` (no key) + `WEATHERAPI_KEY` (alerts) | P3 | ◑ forecast+wave+GDACS keyless & verified; only `WEATHERAPI_KEY` (free, email signup, no card — `weatherapi.com/signup.aspx`) still to get. See `docs/p3-data-source-spike.md` §2 |
-| 4 | `INCOIS_BASE_URL` (access method) | P3 | ◑ no API/key; SST+chl via GeoServer WMS confirmed & sampled; PFZ geometry source still open. See `docs/p3-data-source-spike.md` §3–4 |
-| 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ☐ |
-| 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); ☐ for prod (Supabase, see below) |
+| 4 | `INCOIS_BASE_URL` / `INCOIS_GEOSERVER_URL` / `INCOIS_PFZ_WFS_URL` (all keyless) | P3 | ✓ no API/key. SST+chl via GeoServer WMS `GetFeatureInfo`; PFZ advisory geometry via GeoServer WFS `PFZ_Automation:pfzlines` GeoJSON. Both sampled. See `docs/p3-data-source-spike.md` §3 |
+| 5 | `GIS_BOUNDARY_DATA_PATH` (IMBL/MPA dataset) | P4 | ✓ no API/key. Marine Regions (VLIZ) India EEZ as IMBL proxy + WDPA/Protected Planet bulk country download (no token) for MPAs. See `docs/p4-data-source-spike.md` |
+| 6 | `DATABASE_URL` | P1/P4 | auto locally (Docker); verified — `schema.sql` applies cleanly against local PostGIS (`docs/p4-data-source-spike.md` §5); ☐ for prod (Supabase, see below) |
 | 7 | `RENDER_DEPLOY_HOOK_BACKEND` / `_FRONTEND` | P6 | ☐ (after Render setup) |
 
 ---
@@ -118,13 +118,16 @@ flagged as "confirm API vs. scraping"** — do this before writing
 >   `chl`). Real SST values captured for Kochi/Kollam; watch the `GRAY_INDEX
 >   = -1` / `null` no-data sentinels → must become `None`, never a guess.
 >   Samples in `docs/samples/incois/`.
-> - **PFZ centroids / advisory geometry (FR-OCEAN-1/3): still open** — no
->   vector (WFS) layer; the text advisory isn't a plain GET. Options (browser
->   devtools dig / email INCOIS / parse the PDF bulletin) are in the spike
->   doc §4.2. **Emailing INCOIS user services should happen today** — reply
->   latency is the risk.
+> - **PFZ advisory geometry (FR-OCEAN-1/3): confirmed & sampled** — GeoServer
+>   **WFS → GeoJSON**, `PFZ_Automation:pfzlines` on
+>   `https://incois.gov.in/geoserver/PFZ_Automation/ows`, keyless. 96
+>   `MultiLineString` advisory lines, dated via `Year`+`Julian_day`. Found by
+>   inspecting the PfzWebGis app's network calls. Adapter fetches once/day and
+>   caches. Trimmed sample in `docs/samples/incois/`.
 > - ERDDAP (`erddap.incois.gov.in`) is a clean JSON/CSV fallback for SST/chl;
 >   some datasets are archival, verify recency.
+> - Courtesy email to INCOIS confirming public-prototype use + attribution
+>   ("PFZ advisories © INCOIS") is still worth sending, but no longer blocking.
 
 ## 5. GIS boundary data — IMBL and MPA
 
@@ -144,6 +147,25 @@ it's a Day 1 priority for P4.
   `GIS_BOUNDARY_DATA_PATH` (`src/backend/.env.example`), WGS84 (EPSG:4326) to
   match `geofence_boundary.geometry`'s `GEOMETRY(Geometry, 4326)` column
   (LLD §3).
+
+> **Spike outcome (2026-09-02, `docs/p4-data-source-spike.md`):** resolved,
+> both keyless:
+> - **IMBL**: Marine Regions (VLIZ) Maritime Boundaries Geodatabase v12,
+>   Indian EEZ (200 NM), MRGID 8480 — keyless WFS GeoJSON, used as the
+>   open-data proxy for the maritime boundary line (the literal negotiated
+>   IMBL isn't published as open geometry; see the spike doc §2 for the
+>   distinction).
+> - **MPA**: WDPA/Protected Planet — the REST API needs a free account/token,
+>   but the monthly per-country bulk download
+>   (`d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_<Mon><Year>_Public_IND.zip`)
+>   doesn't. Filtered to `REALM in {Marine, Coastal}`: 6 real MPAs (Sundarbans
+>   NP, Chilika Lake, Sundarban Wetland, Gulf of Mannar Marine Biosphere
+>   Reserve, Pichavaram Mangrove, Thane Creek).
+> - Combined GeoJSON at `src/backend/data/gis/imbl_mpa_boundaries.geojson`
+>   (7 features). `GISBoundaryAdapter.fetch()` loads/caches it.
+>   `scripts/seed_geofence_boundaries.py` seeds `geofence_boundary` from it —
+>   verified against a local `postgis/postgis:16-3.4` container: `schema.sql`
+>   applies cleanly, seed produces 1 IMBL + 6 MPA rows, idempotent re-run.
 
 ## 6. `DATABASE_URL`
 

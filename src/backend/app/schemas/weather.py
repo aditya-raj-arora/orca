@@ -23,8 +23,21 @@ class WeatherResult:
     # this being honest.
     status: AgentStatus = "ok"
 
-    # TODO(P3): populate visibility / precipitation fields per FR-WX-1 — the LLD
-    # dataclass lists "wind, wave height, precipitation, visibility" in prose
-    # (LLD §2.3) but only wind/wave/alerts are given explicit fields; confirm
-    # final field set against the actual weather provider's response shape
-    # (SRS §6.4 dependency) before Sprint 1 exit.
+    # FR-WX-1: precipitation / visibility, resolved at the P1 contract-lock
+    # sync (config/graph coordination, 2026-09-01) — the adapter has always
+    # carried these in its normalised dict (weather_adapter.py's
+    # precipitation_mm / visibility_m keys); they just weren't reaching this
+    # dataclass. None means the provider didn't report the field (same "never
+    # fabricate" rule as everything else here), not "zero".
+    precipitation_mm: float | None = None
+    visibility_m: float | None = None
+
+    # NFR-REL-2: True means both alert sources (WeatherAPI + GDACS) were
+    # actually reachable — active_alerts == [] can be trusted as "no active
+    # alerts". False means neither could be checked, so active_alerts == []
+    # must NOT be read as "clear": it means "unknown". The Risk/Safety Agent
+    # (P4, #33) MUST treat False identically to a missing input — verdict
+    # INSUFFICIENT_DATA, never SAFE — per its own NFR-REL-2 rule; it must not
+    # fall through to the weather-alerts branch of the decision tree as if
+    # active_alerts were authoritative.
+    alerts_source_available: bool = True
