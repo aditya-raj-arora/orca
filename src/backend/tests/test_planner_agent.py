@@ -37,9 +37,27 @@ def _agent_names(plan) -> list[str]:
     return [inv.agent_name for inv in plan.invocations]
 
 
-def test_safety_intent_invokes_weather_and_risk_safety():
+def test_safety_intent_invokes_weather_geofencing_and_risk_safety():
+    """#112: safety intent must invoke Geofencing too, even with no boundary
+    words in the query. Figure 2 cannot reach ANY verdict without a geofence
+    (RiskSafetyAgent returns INSUFFICIENT_DATA when it is None), so omitting it
+    made every "is it safe to..." query permanently unanswerable."""
     plan = route_query(_entities(intent_safety=True), LOCATION, [])
-    assert _agent_names(plan) == ["weather", "risk_safety"]
+    assert _agent_names(plan) == ["weather", "geofencing", "risk_safety"]
+
+
+def test_fishing_intent_alone_does_not_invoke_geofencing():
+    """The #112 widening is scoped to safety intent — a pure "where are the
+    fish" question still doesn't need boundary data, so it shouldn't pay for
+    the extra adapter call."""
+    plan = route_query(_entities(intent_fishing=True), LOCATION, [])
+    assert "geofencing" not in _agent_names(plan)
+
+
+def test_geofencing_is_invoked_once_when_a_query_is_both_safety_and_boundary():
+    plan = route_query(_entities(intent_safety=True, intent_boundary=True), LOCATION, [])
+    assert _agent_names(plan).count("geofencing") == 1
+    assert _agent_names(plan) == ["weather", "geofencing", "risk_safety"]
 
 
 def test_fishing_intent_invokes_ocean_and_risk_safety():
@@ -156,7 +174,8 @@ def test_llm_down_routes_normally_when_the_session_already_has_a_location():
     )
 
     assert not plan.needs_clarification
-    assert _agent_names(plan) == ["weather", "ocean", "risk_safety"]
+    # geofencing rides along on intent_safety (#112)
+    assert _agent_names(plan) == ["weather", "ocean", "geofencing", "risk_safety"]
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +252,7 @@ def test_place_name_without_coordinates_is_geocoded_then_routed():
 
     assert geocoder.calls == ["Kochi"]
     assert not plan.needs_clarification
-    assert _agent_names(plan) == ["weather", "risk_safety"]
+    assert _agent_names(plan) == ["weather", "geofencing", "risk_safety"]
     # The coordinates the specialist agents actually need must be on the payload.
     payload_location = plan.invocations[0].input_payload["location"]
     assert (payload_location["lat"], payload_location["lon"]) == (9.93, 76.26)
