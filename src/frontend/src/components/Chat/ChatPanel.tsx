@@ -216,14 +216,24 @@ export default function ChatPanel() {
 
         {messages.length === 0 && verifyStatus === "success" && (
           <div className="chat-state-container empty-state">
-            <div className="empty-icon-wrap">
-              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mic-pulse">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-                <line x1="12" y1="19" x2="12" y2="22"></line>
+            <button 
+              className="empty-icon-wrap btn-large-mic"
+              onClick={toggleRecording}
+              aria-label={isRecording ? "Stop recording" : "Start recording"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill={isRecording ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={isRecording ? "recording" : "mic-pulse"}>
+                {isRecording ? (
+                  <rect x="6" y="6" width="12" height="12"></rect>
+                ) : (
+                  <>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                    <line x1="12" y1="19" x2="12" y2="22"></line>
+                  </>
+                )}
               </svg>
-            </div>
-            <h3 className="empty-title">Tap to Speak</h3>
+            </button>
+            <h3 className="empty-title">{isRecording ? "Listening..." : "Tap to Speak"}</h3>
           </div>
         )}
 
