@@ -115,7 +115,7 @@ def test_advisory_date_from_year_and_julian_day() -> None:
 
 
 def test_parse_pfz_geojson_from_captured_sample() -> None:
-    gj = json.loads(SAMPLE_PFZ.read_text())
+    gj = json.loads(SAMPLE_PFZ.read_text(encoding="utf-8"))  # #97: explicit, not locale-default
     centroids, advisory_date = _parse_pfz_geojson(gj)
     assert len(centroids) >= 2
     for c in centroids:
@@ -285,7 +285,7 @@ def adapter() -> INCOISAdapter:
 
 
 def test_fetch_pfz_ok_from_sample(adapter: INCOISAdapter, monkeypatch: pytest.MonkeyPatch) -> None:
-    gj = json.loads(SAMPLE_PFZ.read_text())
+    gj = json.loads(SAMPLE_PFZ.read_text(encoding="utf-8"))  # #97: explicit, not locale-default
     monkeypatch.setattr(adapter, "_get_pfz_geojson", lambda: gj)
     res = adapter.fetch({"kind": "pfz"})
     assert res.status in ("ok", "stale")
@@ -366,7 +366,7 @@ def test_fetch_unknown_kind_is_unavailable(adapter: INCOISAdapter) -> None:
 
 def test_agent_over_adapter_end_to_end_stubbed(monkeypatch: pytest.MonkeyPatch) -> None:
     ad = INCOISAdapter()
-    gj = json.loads(SAMPLE_PFZ.read_text())
+    gj = json.loads(SAMPLE_PFZ.read_text(encoding="utf-8"))  # #97: explicit, not locale-default
     monkeypatch.setattr(ad, "_get_pfz_geojson", lambda: gj)
     r = OceanAgent(ad).get_nearest_pfz(LatLon(13.0, 80.3))
     assert r is not None
