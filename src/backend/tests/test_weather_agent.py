@@ -31,11 +31,17 @@ SAMPLES = Path(__file__).resolve().parents[3] / "docs" / "samples" / "weather"
 
 
 def _json(name: str) -> dict:
-    return json.loads((SAMPLES / name).read_text())
+    return json.loads((SAMPLES / name).read_text(encoding="utf-8"))
 
 
 def _text(name: str) -> str:
-    return (SAMPLES / name).read_text()
+    # Explicit encoding, not the platform default (#97): gdacs_tc_rss.xml is a
+    # real captured payload with a leading UTF-8 BOM. A bare read_text() picks
+    # up the OS locale encoding (cp1252 on Windows), which mis-decodes the BOM
+    # into 3 garbage chars and breaks ET.fromstring. httpx (and every other
+    # UTF-8 reader) decodes this file fine — only a locale-dependent read was
+    # broken, matching what the real GDACS feed sends.
+    return (SAMPLES / name).read_text(encoding="utf-8")
 
 
 def _raise(*_a: object) -> object:
