@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     bhashini_user_id: str = ""
     bhashini_base_url: str = "https://bhashini.gov.in/api"
 
+    # Sarvam AI — substitute ASR/TTS/Lang-ID provider (Bhashini sandbox access
+    # blocked as of 2026-09-04; see app/language/bhashini_client.py module
+    # docstring and docs/CREDENTIALS.md #2). Flagged for P1 confirmation.
+    sarvam_api_key: str = ""
+
     # Weather / marine (owner P3, docs/p3-data-source-spike.md §2). All card-free;
     # only weatherapi_key needs a (free, no-card) key. weather_api_key /
     # weather_api_base_url are retained but unused — the OpenWeather plan was

@@ -38,3 +38,4 @@ ruff>=0.6
 pytest>=8.3
 pytest-asyncio>=1.4.0
 httpx>=0.28.1  # also used as the FastAPI test client transport
+sarvamai>=0.1.32
