@@ -267,22 +267,6 @@ body.dark .chat-history::-webkit-scrollbar-thumb {
   box-shadow: 0 4px 20px rgba(59, 130, 246, 0.1);
 }
 
-button.empty-icon-wrap.btn-large-mic {
-  border: none;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-button.empty-icon-wrap.btn-large-mic:hover {
-  background: rgba(59, 130, 246, 0.15);
-  transform: scale(1.05);
-}
-
-button.empty-icon-wrap.btn-large-mic svg.recording {
-  color: var(--color-danger);
-  animation: pulse 2s infinite;
-}
-
 .mic-pulse {
   animation: micPulse 2.5s infinite;
 }
