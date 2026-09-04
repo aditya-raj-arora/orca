@@ -26,6 +26,7 @@ it's kept accurate by review discipline (CONTRIBUTING.md §4).
 | NFR-USE-1..3 | Web Client | HLD §3 | `src/frontend/src/components/` | P5, P6 |
 | NFR-SEC-1..3 | Bhashini module, Gateway, config | LLD §2.1, §2.8 | `language/bhashini_client.py`, `main.py`, `core/config.py` | P1, P2 |
 | Session / ConversationTurn / AgentInvocation / GeofenceBoundary | Persistence | LLD §3 | `src/backend/app/db/` | P4 |
+| End-to-end integration (LLD §6 failure matrix, live pipeline) | Orchestration + all agents | LLD §6, §2, §4 | `src/backend/tests/integration/`, `scripts/e2e_live_check.py` | P1 |
 
 ## Requirement labels on GitHub issues
 

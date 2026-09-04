@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 # one place to tune once real queries are being tested against it.
 MIN_ENTITY_CONFIDENCE = 0.5
 
+# Confidence reported by the LLM-down keyword fallback (_extract_via_keywords).
+# Above MIN_ENTITY_CONFIDENCE when at least one intent keyword matched, below
+# it when none did — see that method's docstring for why this is derived
+# rather than fixed.
+_KEYWORD_FALLBACK_CONFIDENCE = 0.55
+_NO_MATCH_CONFIDENCE = 0.2
+
 # google-genai model id. Free tier via Google AI Studio — see
 # docs/CREDENTIALS.md #1 for why Gemini was chosen over Claude/GPT.
 # gemini-2.5-flash was retired for new API keys (#51); gemini-3.5-flash-lite
@@ -225,15 +232,30 @@ class PlannerAgent:
         """Degraded-mode fallback (LLD §6): no location resolution (there's no
         cheap non-LLM geocoder wired up — TODO(P1) if this fallback proves to
         matter in practice), simple substring matching for intent flags.
-        Confidence is fixed low so plan()'s low-confidence path can still
-        catch genuinely bad matches if desired."""
+
+        Confidence is derived from whether anything actually matched, NOT
+        fixed (#36 integration fix): a fixed sub-threshold value made this
+        whole fallback dead code — plan() would bail to the clarifying
+        question before ever reading the intent flags, so the LLD §6 row
+        ("falls back to a simpler keyword-matching extraction for intent
+        classification; IF LOCATION STILL CANNOT BE RESOLVED, asks the
+        clarifying follow-up") could never reach its second clause. A
+        keyword hit now clears MIN_ENTITY_CONFIDENCE so a session that
+        already has a location (FR-PLAN-5) still gets a real answer with
+        the LLM down; no hit at all stays well below it, which is what
+        plan()'s low-confidence guard is actually for.
+
+        Deliberately just above the threshold rather than high: this is a
+        degraded extraction and the value should read as one."""
         text = query.text.lower()
         safety_kw = ("safe", "safety", "risk", "danger", "go out", "venture")
         fishing_kw = ("fish", "fishing", "pfz", "catch", "zone")
         boundary_kw = ("boundary", "border", "restricted", "protected", "mpa", "imbl")
 
-        def _hit(keywords: tuple[str, ...]) -> bool:
-            return any(kw in text for kw in keywords)
+        def _matches(keywords: tuple[str, ...]) -> list[str]:
+            return [kw for kw in keywords if kw in text]
+
+        matched = _matches(safety_kw) + _matches(fishing_kw) + _matches(boundary_kw)
 
         return QueryEntities(
             location_resolvable=False,
@@ -241,11 +263,13 @@ class PlannerAgent:
             lat=None,
             lon=None,
             time_window_text=None,
-            intent_safety=_hit(safety_kw),
-            intent_fishing=_hit(fishing_kw),
-            intent_boundary=_hit(boundary_kw),
-            confidence=0.4,
-            intent_keywords=[],
+            intent_safety=bool(_matches(safety_kw)),
+            intent_fishing=bool(_matches(fishing_kw)),
+            intent_boundary=bool(_matches(boundary_kw)),
+            confidence=_KEYWORD_FALLBACK_CONFIDENCE if matched else _NO_MATCH_CONFIDENCE,
+            # Surfaced in the trace (FR-PLAN-4) so a degraded run is visibly
+            # degraded rather than silently looking like a normal extraction.
+            intent_keywords=matched,
         )
 
 
