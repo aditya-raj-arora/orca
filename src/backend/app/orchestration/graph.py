@@ -56,6 +56,20 @@ logger = logging.getLogger(__name__)
 # one, never left to hang the query.
 AGENT_TIMEOUT_SECONDS = 6.0
 
+# Synthesis gets its own, larger budget (#118). AGENT_TIMEOUT_SECONDS is sized
+# for a specialist making one bounded HTTP call; SynthesisAgent.compose() makes
+# up to TWO sequential Gemini round trips — the initial generation plus a full
+# regeneration when the citation-coverage / phrasing safety checks reject the
+# first (synthesis_agent.py). At 6s the regeneration had almost no budget left,
+# so a tripped safety check became a timeout and the user got the degraded
+# "couldn't put together an answer" string instead of a real response.
+#
+# Deliberately a separate constant rather than raising AGENT_TIMEOUT_SECONDS:
+# 6s is correct for the specialists, and loosening it would let one slow
+# external API eat the whole query budget, which is precisely what that
+# constant exists to prevent.
+SYNTHESIS_TIMEOUT_SECONDS = 10.0
+
 
 def _merge_dicts(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Reducer for GraphState.results: the three specialist nodes run in
@@ -84,19 +98,32 @@ def _agent_requested(state: GraphState, agent_name: str) -> bool:
     return any(inv.agent_name == agent_name for inv in plan.invocations)
 
 
-async def _call_bounded(fn: Any, *args: Any, unavailable: Any, agent_label: str) -> tuple[Any, str]:
+async def _call_bounded(
+    fn: Any,
+    *args: Any,
+    unavailable: Any,
+    agent_label: str,
+    timeout: float | None = None,
+) -> tuple[Any, str]:
     """Runs a (synchronous, per the LLD's agent method signatures) agent call
-    in a worker thread, bounded by AGENT_TIMEOUT_SECONDS. Returns
+    in a worker thread, bounded by `timeout` (AGENT_TIMEOUT_SECONDS unless the
+    caller overrides it — see SYNTHESIS_TIMEOUT_SECONDS). Returns
     (result_or_unavailable, trace_line) — never raises, per LLD §6: a failed
     or timed-out agent must degrade to an 'unavailable' result, not crash the
-    query or the whole orchestration graph."""
+    query or the whole orchestration graph.
+
+    `timeout=None` resolves to AGENT_TIMEOUT_SECONDS *at call time*, not as a
+    default-argument value: a default would bind the module global once at
+    import, and tests/integration/test_failure_matrix.py patches that global
+    down to make the timeout row run fast. Binding it early silently disabled
+    that patch."""
+    if timeout is None:
+        timeout = AGENT_TIMEOUT_SECONDS
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(fn, *args), timeout=AGENT_TIMEOUT_SECONDS
-        )
+        result = await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         return result, f"{agent_label}: data received"
     except TimeoutError:
-        return unavailable, f"{agent_label}: timed out after {AGENT_TIMEOUT_SECONDS}s (unavailable)"
+        return unavailable, f"{agent_label}: timed out after {timeout}s (unavailable)"
     except Exception as exc:  # noqa: BLE001 - deliberate: degrade, don't crash the query
         return unavailable, f"{agent_label}: error ({exc}) — treated as unavailable"
 
@@ -235,6 +262,7 @@ def _synthesis_node(agent: SynthesisAgent):
             state.get("language", "en"),
             unavailable=_unavailable_composed_response(),
             agent_label="Synthesis Agent",
+            timeout=SYNTHESIS_TIMEOUT_SECONDS,
         )
         return {"composed": composed, "trace": [trace_line]}
 
