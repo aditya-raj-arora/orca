@@ -48,6 +48,34 @@ India's maritime boundary. Confirmed:
   `docs/CREDENTIALS.md` #5. Flagging this distinction explicitly rather than
   letting it read as the literal negotiated IMBL.
 
+## 2a. Follow-up: the EEZ polygon was the wrong geometry (#99)
+
+The EEZ-as-IMBL-proxy decision above is sound as *data sourcing*, but the
+geometry it produces is wrong for the check `GeofencingAgent` actually runs.
+`_check_imbl` measures distance to `geom.boundary`, which for a polygon is
+**every** ring — including the landward one, which is the Indian coastline.
+Every coastal port therefore came back inside the 5 km IMBL buffer (Kochi
+0.80 km, Chennai 2.10 km, Kollam 1.03 km) while a point genuinely near the
+India–Sri Lanka line did not (24.5 km). FR-GEO-4 makes a violation
+non-negotiable, so that was an un-overridable UNSAFE for every query from a
+real fishing port.
+
+The same Marine Regions pull already produced the right geometry:
+`data/gis/imbl_india.geojson`, 24 **LineString** features for the negotiated
+boundaries (Sri Lanka–India, Bangladesh–India, Pakistan–India, Maldives–India,
+and the Andaman & Nicobar lines with Indonesia, Thailand and Myanmar) — which
+is also what `app/db/load_boundaries.py` was already loading for IMBL. Lines
+have no land ring to be mistaken for a boundary and no seaward/landward
+disambiguation to get wrong, so the merged dataset now carries those instead
+of the EEZ polygon (`scripts/rebuild_imbl_boundaries.py`).
+
+Post-fix: Kochi 272 km, Chennai 277 km, Kollam 215 km — all clear; Katchatheevu
+(on the India–Sri Lanka line) 1.6 km — flagged.
+
+The EEZ limit remains re-fetchable from the URL above if a 200 NM check is
+wanted later as a *separate* boundary type; it should not be reintroduced as
+IMBL.
+
 ## 3. MPA — WDPA / Protected Planet
 
 `docs/CREDENTIALS.md` #5 named Protected Planet as the aggregator to check.

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 
@@ -73,6 +74,11 @@ unknown. When you see alerts_source_available is false, say that alert data \
 is currently unavailable / could not be checked. Never say or imply "no \
 active alerts" or "conditions are clear" in that case, even if wind/wave/other \
 weather fields are present and look fine.
+2b. If the risk_safety verdict is "UNSAFE", state that plainly and keep it \
+plain. Do not soften it, do not bury it after reassuring detail, and do not \
+offset it with a "but" clause about favourable conditions — a calm sea does \
+not make an UNSAFE verdict less UNSAFE. Favourable weather or ocean facts may \
+still be reported, but never as a reason to discount the verdict.
 3. Write the response text in the requested language.
 4. Break your response into individual sentences. EVERY sentence that states \
 a fact from an agent's output must be tagged with that agent's name as its \
@@ -106,6 +112,15 @@ def _serialize_result(result: object) -> dict:
         return str(o)
 
     return json.loads(json.dumps(data, default=_default))
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Substring match that won't fire mid-word. Needed because the phrase
+    lists below overlap each other as raw substrings — "safe to" sits inside
+    "unsafe to", so a plain `in` would reject the single most likely correct
+    UNSAFE response ("it is unsafe to fish here") as reassurance. Both `text`
+    and `phrase` are expected lowercase."""
+    return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", text) is not None
 
 
 def _extract_data_timestamp(result: object) -> datetime:
@@ -203,9 +218,75 @@ class SynthesisAgent:
         """Combines the citation-coverage check (FR-SYN-2) with the
         alerts-availability phrasing check (NFR-REL-1) below — both must
         pass before a response ships."""
-        return self._citation_coverage_ok(
-            sentences, available_results
-        ) and self._alerts_unavailable_phrased_safely(sentences, available_results)
+        return (
+            self._citation_coverage_ok(sentences, available_results)
+            and self._alerts_unavailable_phrased_safely(sentences, available_results)
+            and self._verdict_phrased_safely(sentences, available_results)
+        )
+
+    def _verdict_phrased_safely(
+        self, sentences: list[dict], available_results: dict[str, object]
+    ) -> bool:
+        """FR-RISK-2 / NFR-REL-2 / #39 regression guard: an UNSAFE or
+        INSUFFICIENT_DATA verdict must survive composition intact.
+
+        The decision tree goes to real trouble to make these verdicts
+        non-negotiable (RiskSafetyAgent, LLD §4.2 / Figure 2), and all of
+        that is undone if the sentence a fisherman actually hears is "but
+        conditions look fine". Rules 2/2b tell the LLM this; as with the
+        citation-coverage and alerts checks, we do not trust it blindly.
+
+        Deterministic and narrow on purpose — it rejects two specific
+        failures rather than trying to judge tone:
+          1. a risk_safety sentence that reads as reassurance, and
+          2. an output that never states the verdict at all.
+        Favourable weather/ocean sentences are untouched: reporting a calm
+        sea is fine, presenting it as a reason to discount the verdict is
+        not, and only risk_safety-sourced sentences can do the latter.
+        """
+        risk = available_results.get("risk_safety")
+        if risk is None:
+            return True
+        verdict = getattr(risk, "verdict", None)
+        if verdict is None and isinstance(risk, dict):
+            verdict = risk.get("verdict")
+        if verdict not in ("UNSAFE", "INSUFFICIENT_DATA"):
+            return True
+
+        reassurance = (
+            "safe to", "should be fine", "looks fine", "look fine", "no risk",
+            "no danger", "conditions are good", "conditions are fine", "all clear",
+            "you can proceed", "good to go", "no concern",
+        )
+        risk_sentences = [s for s in sentences if s.get("source") == "risk_safety"]
+        for sentence in risk_sentences:
+            text = (sentence.get("text") or "").lower()
+            if any(_contains_phrase(text, phrase) for phrase in reassurance):
+                logger.warning(
+                    "Synthesis: risk_safety sentence reads as reassurance while "
+                    "the verdict is %s: %r", verdict, sentence.get("text"),
+                )
+                return False
+
+        # The verdict has to actually appear somewhere. A response that
+        # simply omits an UNSAFE verdict is as dangerous as one that
+        # contradicts it, and is the likelier LLM failure of the two.
+        spoken = {
+            "UNSAFE": ("unsafe", "not safe", "do not go", "don't go", "avoid"),
+            "INSUFFICIENT_DATA": (
+                "insufficient", "not enough data", "cannot be given", "can't be given",
+                "unavailable", "cannot determine", "can't determine", "unknown",
+            ),
+        }[verdict]
+        if not any(
+            any(_contains_phrase((s.get("text") or "").lower(), phrase) for phrase in spoken)
+            for s in sentences
+        ):
+            logger.warning(
+                "Synthesis: verdict is %s but no sentence states it.", verdict
+            )
+            return False
+        return True
 
     def _alerts_unavailable_phrased_safely(
         self, sentences: list[dict], available_results: dict[str, object]

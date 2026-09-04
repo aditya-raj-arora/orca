@@ -6,7 +6,13 @@ these tests don't need a real LLM_API_KEY — see planner_agent.py's module
 docstring.
 """
 from app.core.session import ConversationContext
-from app.orchestration.planner_agent import QueryEntities, route_query
+from app.orchestration.planner_agent import (
+    MIN_ENTITY_CONFIDENCE,
+    NormalizedQuery,
+    PlannerAgent,
+    QueryEntities,
+    route_query,
+)
 
 LOCATION = {"place_name": "Kochi", "lat": 9.93, "lon": 76.26}
 
@@ -82,3 +88,72 @@ def test_last_known_location_none_when_never_resolved():
     ctx = ConversationContext(session_id="s2")
     ctx.append_turn("hello", {"location": None})
     assert ctx.last_known_location() is None
+
+
+# --------------------------------------------------------------------- #
+# LLM-down keyword fallback (LLD §6 "LLM provider timeout during entity
+# extraction"). Added with #36: this path had no coverage at all, which is
+# how it went unnoticed that a fixed sub-threshold confidence made it
+# unreachable — plan() bailed to the clarifying question before ever reading
+# the intent flags it had just computed.
+# --------------------------------------------------------------------- #
+class _DownLLM:
+    """A client whose only method fails, standing in for a provider timeout."""
+
+    class models:  # noqa: N801 - mirrors google-genai's client.models attribute
+        @staticmethod
+        def generate_content(**_kwargs):
+            raise TimeoutError("stub: LLM provider timed out")
+
+
+def _planner_with_llm_down() -> PlannerAgent:
+    return PlannerAgent(llm_client=_DownLLM())
+
+
+def test_keyword_fallback_classifies_intent_when_the_llm_is_down():
+    entities = _planner_with_llm_down().extract_entities(
+        NormalizedQuery(text="is it safe to fish near the restricted zone", language="en")
+    )
+
+    assert entities.intent_safety and entities.intent_fishing and entities.intent_boundary
+    # Location has no non-LLM fallback — it must stay unresolved, not be guessed.
+    assert entities.location_resolvable is False
+    assert entities.lat is None and entities.lon is None
+    # Above the clarification threshold, so plan() can actually use the flags.
+    assert entities.confidence >= MIN_ENTITY_CONFIDENCE
+
+
+def test_keyword_fallback_with_no_match_stays_below_the_clarification_threshold():
+    entities = _planner_with_llm_down().extract_entities(
+        NormalizedQuery(text="what is the capital of france", language="en")
+    )
+
+    assert not (entities.intent_safety or entities.intent_fishing or entities.intent_boundary)
+    assert entities.confidence < MIN_ENTITY_CONFIDENCE
+
+
+def test_llm_down_with_no_prior_location_still_asks_for_one():
+    """The fallback must not become a licence to guess: with nothing in the
+    session and no geocoder, Figure 1's clarifying follow-up is still the
+    correct outcome."""
+    plan = _planner_with_llm_down().plan(
+        NormalizedQuery(text="is it safe to fish today", language="en"),
+        ConversationContext(session_id="llm-down"),
+    )
+
+    assert plan.needs_clarification
+    assert plan.invocations == []
+
+
+def test_llm_down_routes_normally_when_the_session_already_has_a_location():
+    """LLD §6's second clause: keyword-extracted intent plus an FR-PLAN-5
+    context location is enough to answer with the LLM unavailable."""
+    context = ConversationContext(session_id="llm-down-with-context")
+    context.append_turn("", {"location": LOCATION})
+
+    plan = _planner_with_llm_down().plan(
+        NormalizedQuery(text="is it safe to fish there", language="en"), context
+    )
+
+    assert not plan.needs_clarification
+    assert _agent_names(plan) == ["weather", "ocean", "risk_safety"]

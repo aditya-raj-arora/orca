@@ -12,17 +12,20 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 });
 
-interface MarkerData {
+export interface MarkerData {
   id: string;
   lat: number;
   lng: number;
   label: string;
 }
 
-interface ZoneData {
+export interface ZoneData {
   id: string;
   coordinates: [number, number][];
   label: string;
+  zoneType?: 'PFZ' | 'IMBL' | 'MPA';
+  isViolation?: boolean;
+  isProximity?: boolean;
 }
 
 interface MapPanelProps {
@@ -32,27 +35,44 @@ interface MapPanelProps {
 
 const DEFAULT_CENTER: [number, number] = [10.0, 76.3];
 
-const MOCK_MARKERS: MarkerData[] = [
-  { id: "1", lat: 10.0, lng: 76.3, label: "Queried Location (Kochi Centroid)" }
-];
-
-const MOCK_ZONES: ZoneData[] = [
-  {
-    id: "mpa-1",
-    label: "Mock MPA Zone",
-    coordinates: [
-      [9.9, 76.1],
-      [10.1, 76.1],
-      [10.1, 76.4],
-      [9.9, 76.4]
-    ]
-  }
-];
-
 export default function MapPanel({
-  markers = MOCK_MARKERS,
-  zones = MOCK_ZONES
+  markers = [],
+  zones = []
 }: MapPanelProps) {
+  const getZoneStyle = (zone: ZoneData) => {
+    if (zone.isViolation) {
+      return {
+        color: "#dc2626",
+        fillColor: "#ef4444",
+        fillOpacity: 0.5,
+        weight: 3,
+        dashArray: "6, 6"
+      };
+    }
+    if (zone.isProximity) {
+      return {
+        color: "#f59e0b",
+        fillColor: "#fbbf24",
+        fillOpacity: 0.4,
+        weight: 2
+      };
+    }
+    if (zone.zoneType === 'PFZ') {
+      return {
+        color: "#10b981",
+        fillColor: "#34d399",
+        fillOpacity: 0.25,
+        weight: 2
+      };
+    }
+    return {
+      color: "#3b82f6",
+      fillColor: "#60a5fa",
+      fillOpacity: 0.2,
+      weight: 2
+    };
+  };
+
   return (
     <MapContainer center={DEFAULT_CENTER} zoom={8} style={{ height: "100%", width: "100%" }}>
       <TileLayer
@@ -67,8 +87,16 @@ export default function MapPanel({
       ))}
 
       {zones.map((zone) => (
-        <Polygon key={zone.id} positions={zone.coordinates} pathOptions={{ color: "red" }}>
-          <Popup>{zone.label}</Popup>
+        <Polygon key={zone.id} positions={zone.coordinates} pathOptions={getZoneStyle(zone)}>
+          <Popup>
+            <div>
+              <strong>{zone.label}</strong>
+              <br />
+              Type: {zone.zoneType || 'Standard Zone'}
+              {zone.isViolation && <span style={{ color: 'red', display: 'block' }}>Status: Violation Detected</span>}
+              {zone.isProximity && <span style={{ color: 'orange', display: 'block' }}>Status: Proximity Warning</span>}
+            </div>
+          </Popup>
         </Polygon>
       ))}
     </MapContainer>

@@ -118,3 +118,86 @@ def test_stale_pfz_advisory_is_noted_but_does_not_change_verdict():
     verdict = RiskSafetyAgent().evaluate(_weather(), _geofence(), stale_pfz)
     assert verdict.verdict == "SAFE"
     assert "stale" in verdict.rationale.lower()
+
+
+def test_marginal_wind_with_no_alert_returns_caution():
+    """Figure 2's "weather conditions marginal (e.g. moderate wind/wave, no
+    active alert)?" branch — the only path that yields CAUTION."""
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(_weather(wind_speed_kmh=30.0), _geofence(), None)
+    assert verdict.verdict == "CAUTION"
+    assert any("wind" in f for f in verdict.contributing_factors)
+
+
+def test_marginal_wave_with_no_alert_returns_caution():
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(_weather(wave_height_m=2.5), _geofence(), None)
+    assert verdict.verdict == "CAUTION"
+    assert any("wave" in f for f in verdict.contributing_factors)
+
+
+def test_marginal_thresholds_are_inclusive():
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    assert agent.evaluate(_weather(wind_speed_kmh=25.0), _geofence(), None).verdict == "CAUTION"
+    assert agent.evaluate(_weather(wave_height_m=2.0), _geofence(), None).verdict == "CAUTION"
+
+
+def test_below_marginal_thresholds_stays_safe():
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(
+        _weather(wind_speed_kmh=24.9, wave_height_m=1.9), _geofence(), None
+    )
+    assert verdict.verdict == "SAFE"
+
+
+def test_marginal_conditions_never_downgrade_a_geofence_violation():
+    """FR-GEO-4: CAUTION sits below the geofence branch, so marginal weather
+    can only ever soften SAFE — never soften UNSAFE."""
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(
+        _weather(wind_speed_kmh=30.0),
+        _geofence(within_mpa=True, mpa_name="Gulf of Mannar"),
+        None,
+    )
+    assert verdict.verdict == "UNSAFE"
+
+
+def test_marginal_conditions_never_downgrade_an_active_alert():
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(
+        _weather(wind_speed_kmh=30.0, active_alerts=["Cyclone warning"]),
+        _geofence(),
+        None,
+    )
+    assert verdict.verdict == "UNSAFE"
+
+
+def test_marginal_conditions_never_override_missing_data():
+    """NFR-REL-2: a marginal-but-present WeatherResult must not turn a missing
+    geofence into an actionable verdict."""
+    agent = RiskSafetyAgent(marginal_wind_kmh=25.0, marginal_wave_m=2.0)
+    verdict = agent.evaluate(_weather(wind_speed_kmh=30.0), None, None)
+    assert verdict.verdict == "INSUFFICIENT_DATA"
+
+
+def test_marginal_thresholds_are_configurable_not_hardcoded():
+    """The LLD fixes the branch but not the numbers — they come from
+    RISK_MARGINAL_* config, so the same reading can fall either side."""
+    strict = RiskSafetyAgent(marginal_wind_kmh=10.0, marginal_wave_m=0.5)
+    lenient = RiskSafetyAgent(marginal_wind_kmh=60.0, marginal_wave_m=6.0)
+    reading = dict(wind_speed_kmh=20.0, wave_height_m=1.0)
+    assert strict.evaluate(_weather(**reading), _geofence(), None).verdict == "CAUTION"
+    assert lenient.evaluate(_weather(**reading), _geofence(), None).verdict == "SAFE"
+
+
+def test_rationale_carries_source_data_timestamps():
+    """Figure 2's final step: rationale = driving factor(s) + source data
+    timestamps (FR-RISK-2)."""
+    pfz = PFZResult(
+        centroid=None, distance_km=10.0, bearing_deg=90.0,
+        data_timestamp=_NOW, is_stale=False,
+    )
+    verdict = RiskSafetyAgent().evaluate(_weather(), _geofence(), pfz)
+    assert _NOW.isoformat() in verdict.rationale
+    assert "weather" in verdict.rationale.lower()
+    assert "pfz" in verdict.rationale.lower()

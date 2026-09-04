@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     weatherapi_base_url: str = "https://api.weatherapi.com/v1"
     weatherapi_key: str = ""
     gdacs_base_url: str = "https://www.gdacs.org/xml"
+    # Rate-limit protection for the keyless Open-Meteo tier (#106). Repeat
+    # queries about the same ~5 km cell inside this window are served from
+    # WeatherDataAdapter's in-process cache instead of spending quota. 10 min
+    # sits under Open-Meteo's ~15 min model refresh, so a cache hit is never
+    # older than the numbers a live call would have returned. Set to 0 to
+    # disable the cache entirely (every fetch goes upstream).
+    weather_cache_ttl_seconds: float = 600.0
 
     incois_base_url: str = "https://incois.gov.in"
     incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"
@@ -59,6 +66,15 @@ class Settings(BaseSettings):
 
     gis_boundary_data_path: str = "./data/gis/imbl_mpa_boundaries.geojson"
     imbl_buffer_km: float = 5.0
+
+    # Risk/Safety Agent marginal-conditions thresholds (owner P4, LLD §4.2 /
+    # Figure 2 "Weather conditions marginal ... no active alert?" branch).
+    # At or above either value, with no active alert and no geofence
+    # violation, the verdict is CAUTION rather than SAFE. Configurable, not
+    # hardcoded in risk_safety_agent.py — the LLD gives the branch but no
+    # numbers, so these are the team's defaults and are expected to be tuned.
+    risk_marginal_wind_kmh: float = 25.0
+    risk_marginal_wave_m: float = 2.0
 
 
 @lru_cache
