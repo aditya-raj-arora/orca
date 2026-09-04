@@ -1,11 +1,21 @@
 # Enforces CONTRIBUTING.md §1 "everything traces to a requirement": every PR
-# must reference a Requirement ID (FR-xxx / NFR-xxx) or an explicit design
-# section (LLD §x / HLD §x) somewhere in its title or body.
+# must reference a Requirement ID (FR-xxx / NFR-xxx), an explicit design
+# section (LLD §x / HLD §x / SRS §x), a CONTRIBUTING.md §x process
+# reference, or be explicitly tagged [no-req] for a genuinely non-functional
+# change (team/ownership metadata, typo fixes, CI config, etc. — nothing the
+# SRS/HLD/LLD govern) somewhere in its title or body.
 #
 # Owner: P1 (Backend/Orchestration Lead), original author of this check.
 # This is deliberately a soft, fast regex check, not a hard content review —
 # it exists to catch the *absence* of any traceability tag, not to judge
 # whether the tag chosen is the right one (that's the reviewer's job).
+# [no-req] is an explicit, visible escape hatch rather than a silent
+# exemption — it still shows up in `git log`/PR search, so it stays
+# reviewable, unlike simply disabling the check for certain paths.
+#
+# Dependabot-authored PRs are skipped outright: their titles/bodies are
+# templated by GitHub and not something we control per-PR, and a version
+# bump is definitionally a [no-req] change (see .github/dependabot.yml).
 name: traceability-check
 
 on:
@@ -15,20 +25,24 @@ on:
 jobs:
   check-requirement-tag:
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     steps:
       - name: Verify PR references a requirement or design section
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = context.payload.pull_request.title || "";
             const body = context.payload.pull_request.body || "";
             const text = `${title}\n${body}`;
-            const pattern = /\b(F|NF)R-[A-Z]+-\d+\b|\bLLD\s*§|\bHLD\s*§|\bSRS\s*§/i;
+            const pattern = /\b(F|NF)R-[A-Z]+-\d+\b|\bLLD\s*§|\bHLD\s*§|\bSRS\s*§|\bCONTRIBUTING(\.md)?\s*§|\[no-req\]/i;
             if (!pattern.test(text)) {
               core.setFailed(
                 "This PR doesn't reference a Requirement ID (e.g. FR-WX-1, " +
-                "NFR-SEC-2) or a design section (LLD §2.6, HLD §3) in its " +
-                "title or description. See CONTRIBUTING.md §1 — every change " +
-                "must trace back to a requirement. Add the tag and re-run."
+                "NFR-SEC-2), a design section (LLD §2.6, HLD §3, SRS §2.3), " +
+                "a process reference (CONTRIBUTING.md §8), or the [no-req] " +
+                "tag for a genuinely non-functional change, in its title or " +
+                "description. See CONTRIBUTING.md §1 — every change must " +
+                "trace back to a requirement or be explicitly marked as not " +
+                "having one. Add the tag and re-run."
               );
             }

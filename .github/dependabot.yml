@@ -1,0 +1,43 @@
+# Keeps dependencies from rotting silently after the hackathon build window
+# closes. Opens a PR per ecosystem on a weekly cadence; each PR still has to
+# pass CI (backend-ci / frontend-ci) and the traceability-check like any
+# other PR — dependency bumps are tagged [no-req] by default here since they
+# don't map to a specific FR/NFR (see CONTRIBUTING.md §1).
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/src/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "owner:P1"
+    commit-message:
+      prefix: "chore(deps)"
+    pull-request-branch-name:
+      separator: "-"
+
+  - package-ecosystem: "npm"
+    directory: "/src/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "owner:P5"
+    commit-message:
+      prefix: "chore(deps)"
+    pull-request-branch-name:
+      separator: "-"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "owner:P1"
+    commit-message:
+      prefix: "chore(ci)"

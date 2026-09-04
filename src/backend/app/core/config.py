@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"
     incois_pfz_wfs_url: str = "https://incois.gov.in/geoserver/PFZ_Automation/ows"
     ocean_pfz_staleness_hours: float = 48.0
+    # Demo-resilience (#38 / HLD §9 RISK-1): if the live PFZ WFS is unreachable
+    # and nothing is in the per-day cache, INCOISAdapter serves this bundled
+    # snapshot as status='stale'. Refresh with scripts/refresh_pfz_snapshot.sh.
+    # TODO(P1): confirm at the next contract-lock touch (additive).
+    incois_pfz_snapshot_path: str = "./data/snapshots/pfz_latest.json.gz"
 
     gis_boundary_data_path: str = "./data/gis/imbl_mpa_boundaries.geojson"
     imbl_buffer_km: float = 5.0

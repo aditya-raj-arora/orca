@@ -311,3 +311,25 @@ and PFZ geometry both confirmed key-free). This closes issue #3.
   the alert sources" (NFR-REL-1).
 - `OceanParams` handling `None` for chl is already in the contract — good,
   because chl will frequently be `None` in practice.
+
+## 6. Adapter resilience (#38, implemented)
+
+Every simulated upstream failure — connect error, timeout, 4xx/5xx, non-JSON
+body, empty body, non-numeric core field — is covered in
+`tests/test_adapter_faults.py` and returns `AdapterResult(status='unavailable'
+| 'stale')`, never an exception, never a fabricated value (LLD §2.9,
+NFR-REL-1). Hardening added: `_normalise()` call wrapped in weather `fetch()`;
+core fields parsed via `_as_float` so a `"N/A"` wind can't raise.
+
+- **Weather**: no cached-snapshot fallback by design — Open-Meteo (2 independent
+  keyless endpoints) + GDACS are not a single point of failure, and a generic
+  snapshot would be location-wrong. A real outage yields honest
+  `status='unavailable'`; the graph substitutes its own sentinel.
+- **INCOIS PFZ**: a single ~1.3 MB provider *is* a SPOF, so `INCOISAdapter`
+  serves a **bundled gzipped snapshot** (`data/snapshots/pfz_latest.json.gz`,
+  coords rounded to 5 dp) as `status='stale'` when the live WFS is down and
+  P1's per-day cache is cold. Not cached — a transient outage retries live
+  next call. Refresh + commit via `scripts/refresh_pfz_snapshot.sh`.
+- **`alerts_source_available`** flows adapter → `WeatherResult`. The
+  Synthesis wording ("alert data unavailable" vs "no alerts") is **P2 #37**;
+  Risk/Safety treating the flag as INSUFFICIENT_DATA is **P4 #33**.

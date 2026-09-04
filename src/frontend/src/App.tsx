@@ -18,11 +18,19 @@ export default function App() {
   // small store in src/state/) once ChatPanel needs to trigger MapPanel and
   // TraceViewer updates from the same WebSocket stream (LLD §5.2).
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", height: "100vh" }}>
-      <ChatPanel />
-      <div style={{ display: "grid", gridTemplateRows: "2fr 1fr" }}>
-        <MapPanel />
-        <TraceViewer />
+    <div className="app-layout">
+      <header className="app-header">
+        <h1>ORCA</h1>
+        <span className="subtitle">Marine Intelligence</span>
+      </header>
+      <div className="main-content">
+        <div className="glass-panel chat-panel-container">
+          <ChatPanel />
+        </div>
+        <div className="glass-panel map-trace-container">
+          <MapPanel />
+          <TraceViewer />
+        </div>
       </div>
     </div>
   );

@@ -20,9 +20,12 @@ advisory returns status='stale' (data still included).
 """
 from __future__ import annotations
 
+import gzip
+import json
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -60,6 +63,7 @@ class INCOISAdapter(DataSourceAdapter):
         self._pfz_wfs_url = s.incois_pfz_wfs_url.rstrip("/")
         self._geoserver_url = s.incois_geoserver_url.rstrip("/")
         self._staleness_hours = s.ocean_pfz_staleness_hours
+        self._snapshot_path = s.incois_pfz_snapshot_path
 
     # ------------------------------------------------------------------ #
     def fetch(self, params: dict[str, Any]) -> AdapterResult:
@@ -88,31 +92,43 @@ class INCOISAdapter(DataSourceAdapter):
         if cached is not None:
             return cached
 
-        gj = self._get_pfz_geojson()
-        centroids, advisory_date = _parse_pfz_geojson(gj)
-        if not centroids:
-            # Don't cache a failure — retry on the next call, not tomorrow.
-            return AdapterResult(data=None, fetched_at=now, status="unavailable")
+        try:
+            gj = self._get_pfz_geojson()
+            centroids, advisory_date = _parse_pfz_geojson(gj)
+        except Exception as exc:  # noqa: BLE001 - LLD §2.9: degrade, never raise
+            logger.warning("INCOISAdapter: live PFZ fetch/parse failed (%s)", exc)
+            centroids, advisory_date = [], None
 
-        status: str = "ok"
-        if advisory_date is not None:
-            age_h = (now - advisory_date).total_seconds() / 3600.0
-            if age_h > self._staleness_hours:
-                status = "stale"
+        if not centroids:
+            # Live feed unusable. Try the bundled snapshot (#38 / HLD §9); if
+            # that's absent too, report unavailable. Neither path is cached —
+            # a transient outage must not stick for the rest of the day.
+            return self._pfz_snapshot_fallback(now)
 
         result = AdapterResult(
-            data={
-                "pfz": centroids,
-                "advisory_date": advisory_date.isoformat() if advisory_date else None,
-                "count": len(centroids),
-            },
+            data=_pfz_data(centroids, advisory_date),
             fetched_at=now,
-            status=status,  # type: ignore[arg-type]
+            status=_pfz_status(now, advisory_date, self._staleness_hours),  # type: ignore[arg-type]
         )
         with _PFZ_CACHE_LOCK:
             _PFZ_CACHE.clear()  # single-entry cache: only today's key is ever useful
             _PFZ_CACHE[cache_key] = result
         return result
+
+    def _pfz_snapshot_fallback(self, now: datetime) -> AdapterResult:
+        snap = _load_pfz_snapshot(self._snapshot_path)
+        if snap is None:
+            return AdapterResult(data=None, fetched_at=now, status="unavailable")
+        centroids, advisory_date = snap
+        logger.warning(
+            "INCOISAdapter: live PFZ unavailable — serving bundled snapshot as "
+            "stale (%d zones, advisory %s)",
+            len(centroids),
+            advisory_date.date() if advisory_date else "unknown",
+        )
+        return AdapterResult(
+            data=_pfz_data(centroids, advisory_date), fetched_at=now, status="stale"
+        )
 
     def _get_pfz_geojson(self) -> dict[str, Any]:
         r = httpx.get(
@@ -242,3 +258,39 @@ def _advisory_date_from_props(props: dict[str, Any]) -> datetime | None:
     if not (1 <= jd <= 366):
         return None
     return datetime(year, 1, 1, tzinfo=UTC) + timedelta(days=jd - 1)
+
+
+def _pfz_data(centroids: list[dict[str, Any]], advisory_date: datetime | None) -> dict[str, Any]:
+    return {
+        "pfz": centroids,
+        "advisory_date": advisory_date.isoformat() if advisory_date else None,
+        "count": len(centroids),
+    }
+
+
+def _pfz_status(now: datetime, advisory_date: datetime | None, staleness_hours: float) -> str:
+    if advisory_date is None:
+        return "ok"
+    age_h = (now - advisory_date).total_seconds() / 3600.0
+    return "stale" if age_h > staleness_hours else "ok"
+
+
+def _load_pfz_snapshot(
+    path: str,
+) -> tuple[list[dict[str, Any]], datetime | None] | None:
+    """Read the bundled PFZ snapshot (optionally gzipped). Returns
+    (centroids, advisory_date) or None if the file is missing / unreadable /
+    empty — the caller then reports unavailable (never a fabricated value)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        raw = p.read_bytes()
+        if p.suffix == ".gz":
+            raw = gzip.decompress(raw)
+        gj = json.loads(raw)
+    except (OSError, ValueError, gzip.BadGzipFile) as exc:
+        logger.warning("INCOISAdapter: PFZ snapshot at %s unreadable (%s)", path, exc)
+        return None
+    centroids, advisory_date = _parse_pfz_geojson(gj)
+    return (centroids, advisory_date) if centroids else None

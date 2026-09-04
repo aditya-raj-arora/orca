@@ -66,6 +66,13 @@ outside knowledge, never guess a number, never invent a place name.
 2. If an agent's status is "unavailable" or a verdict is "INSUFFICIENT_DATA", \
 say so plainly in the response — never phrase missing/insufficient data in a \
 way that could read as "safe" or "fine".
+2a. The weather agent output may include "alerts_source_available": false. \
+This means BOTH severe-weather alert sources were unreachable, so an empty \
+"active_alerts" list does NOT mean "no alerts" — it means alert status is \
+unknown. When you see alerts_source_available is false, say that alert data \
+is currently unavailable / could not be checked. Never say or imply "no \
+active alerts" or "conditions are clear" in that case, even if wind/wave/other \
+weather fields are present and look fine.
 3. Write the response text in the requested language.
 4. Break your response into individual sentences. EVERY sentence that states \
 a fact from an agent's output must be tagged with that agent's name as its \
@@ -148,17 +155,17 @@ class SynthesisAgent:
 
         sentences = self._generate_sentences(prompt_payload)
 
-        if not self._citation_coverage_ok(sentences, available_results):
+        if not self._response_is_safe(sentences, available_results):
             logger.warning(
-                "Synthesis: citation coverage failed on first attempt — "
-                "regenerating once (FR-SYN-2)."
+                "Synthesis: safety check failed on first attempt — "
+                "regenerating once (FR-SYN-2 / NFR-REL-1)."
             )
             sentences = self._generate_sentences(prompt_payload)
 
-        if not self._citation_coverage_ok(sentences, available_results):
+        if not self._response_is_safe(sentences, available_results):
             logger.error(
-                "Synthesis: citation coverage failed twice — refusing to "
-                "ship an uncited claim. Returning degraded response."
+                "Synthesis: safety check failed twice — refusing to ship an "
+                "uncited or falsely-reassuring claim. Returning degraded response."
             )
             return self._degraded_response(available_results, plan)
 
@@ -189,6 +196,58 @@ class SynthesisAgent:
         )
         data = json.loads(response.text)
         return list(data.get("sentences", []))
+
+    def _response_is_safe(
+        self, sentences: list[dict], available_results: dict[str, object]
+    ) -> bool:
+        """Combines the citation-coverage check (FR-SYN-2) with the
+        alerts-availability phrasing check (NFR-REL-1) below — both must
+        pass before a response ships."""
+        return self._citation_coverage_ok(
+            sentences, available_results
+        ) and self._alerts_unavailable_phrased_safely(sentences, available_results)
+
+    def _alerts_unavailable_phrased_safely(
+        self, sentences: list[dict], available_results: dict[str, object]
+    ) -> bool:
+        """NFR-REL-1 / #37 regression guard: when
+        weather.alerts_source_available is False, active_alerts == [] means
+        "unknown", not "clear" (see WeatherResult and RiskSafetyAgent
+        docstrings). Deterministically reject any weather-sourced sentence
+        that reads as an all-clear, and require at least one that flags the
+        alert data as unavailable — the LLM is told this in the prompt (rule
+        2a) but this check does not trust it blindly, same rationale as the
+        citation-coverage check not trusting the LLM's citations blindly."""
+        weather = available_results.get("weather")
+        if weather is None or getattr(weather, "alerts_source_available", True):
+            return True
+
+        false_reassurance = ("no active alert", "no alert", "clear", "safe to", "all clear")
+        unavailable_phrasing = ("unavailable", "cannot be confirmed", "can't be confirmed",
+                                 "could not be checked", "couldn't be checked", "unknown")
+
+        weather_sentences = [s for s in sentences if s.get("source") == "weather"]
+        flagged_unavailable = False
+        for sentence in weather_sentences:
+            text = (sentence.get("text") or "").lower()
+            if any(phrase in text for phrase in false_reassurance) and not any(
+                phrase in text for phrase in unavailable_phrasing
+            ):
+                logger.warning(
+                    "Synthesis: weather sentence reads as all-clear while "
+                    "alerts_source_available is False: %r", sentence.get("text"),
+                )
+                return False
+            if any(phrase in text for phrase in unavailable_phrasing):
+                flagged_unavailable = True
+
+        if not flagged_unavailable:
+            logger.warning(
+                "Synthesis: alerts_source_available is False but no weather "
+                "sentence flags alert data as unavailable."
+            )
+            return False
+        return True
 
     def _citation_coverage_ok(
         self, sentences: list[dict], available_results: dict[str, object]

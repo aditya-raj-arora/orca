@@ -312,9 +312,13 @@ def test_fetch_pfz_marks_stale_when_advisory_old(
     assert adapter.fetch({"kind": "pfz"}).status == "stale"
 
 
-def test_fetch_pfz_unavailable_when_http_raises(
+def test_fetch_pfz_unavailable_when_http_raises_and_no_snapshot(
     adapter: INCOISAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # With no bundled snapshot, a live failure -> unavailable. The
+    # snapshot-fallback -> 'stale' path is covered in test_adapter_faults.py.
+    monkeypatch.setattr(adapter, "_snapshot_path", "/nonexistent/pfz.json.gz")
+
     def boom() -> dict:
         raise RuntimeError("INCOIS down")
 
@@ -324,9 +328,10 @@ def test_fetch_pfz_unavailable_when_http_raises(
     assert res.data is None
 
 
-def test_fetch_pfz_unavailable_when_no_parseable_features(
+def test_fetch_pfz_unavailable_when_no_parseable_features_and_no_snapshot(
     adapter: INCOISAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(adapter, "_snapshot_path", "/nonexistent/pfz.json.gz")
     monkeypatch.setattr(adapter, "_get_pfz_geojson", lambda: {"features": []})
     assert adapter.fetch({"kind": "pfz"}).status == "unavailable"
 
