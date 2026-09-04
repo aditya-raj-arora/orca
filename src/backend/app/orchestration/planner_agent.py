@@ -389,11 +389,23 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
             AgentInvocationRequest(agent_name="ocean", input_payload={"location": location})
         )
 
-    if entities.intent_boundary:
-        trace.append(
-            "Planner: intent involves boundary/restricted zone proximity "
-            "-> invoking Geofencing Agent"
+    # Geofencing runs for a safety question too, not just an explicit boundary
+    # one (#112). Figure 2 cannot reach any verdict without a geofence — the
+    # Risk agent returns INSUFFICIENT_DATA when it is missing (FR-RISK-3 /
+    # NFR-REL-2: a missing contributing agent never degrades to SAFE) — so
+    # routing "is it safe to fish near X" without Geofencing made that query
+    # permanently unanswerable no matter how good the weather data was.
+    #
+    # It is also the substantively right answer, not just a wiring fix: you
+    # cannot honestly tell someone it is safe to go out without knowing whether
+    # the trip crosses the IMBL or an MPA.
+    if entities.intent_boundary or entities.intent_safety:
+        why = (
+            "boundary/restricted zone proximity"
+            if entities.intent_boundary
+            else "safety (Fig.2 needs a geofence before any verdict)"
         )
+        trace.append(f"Planner: intent involves {why} -> invoking Geofencing Agent")
         invocations.append(
             AgentInvocationRequest(agent_name="geofencing", input_payload={"location": location})
         )
