@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { wsClient } from "../../api/wsClient";
-import { API_BASE_URL } from "../../api/config";
+import { createSession, checkSession } from "../../api/session";
 import { MAP_UPDATE_EVENT } from "../../api/mapPayload";
 import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
 import "./ChatPanel.css";
@@ -22,62 +22,95 @@ export default function ChatPanel() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
 
-  const [sessionId, setSessionId] = useState(() => {
-    return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
-  });
+  // null until the session is established — either restored from a previous
+  // visit or minted by the backend (#104). Every effect that talks to the
+  // backend waits for it, so nothing races the POST /api/v1/session.
+  const [sessionId, setSessionId] = useState<string | null>(() =>
+    localStorage.getItem("orca_session"),
+  );
   const [verifyStatus, setVerifyStatus] = useState<"pending" | "failed" | "success">("pending");
 
-  // Verify session on mount
+  // Establish the session on mount (LLD §5.1). A stored id is verified against
+  // the backend first; an id the backend doesn't recognise is replaced rather
+  // than reused, which is also what migrates pre-#104 `sess_*` ids.
   useEffect(() => {
-    const verifySession = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/v1/session/${sessionId}/history`);
-        if (res.status === 404) {
-          // Session has no history on backend. Clear local storage for it.
-          localStorage.removeItem(`orca_chat_history_${sessionId}`);
-          setMessages([]);
-          setVerifyStatus("success");
-        } else if (res.ok) {
-          // Session valid, load rich history from local storage
-          const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
-          if (saved) {
-            const parsedSaved = JSON.parse(saved) as ChatMessage[];
-            setMessages((prev) => {
-              const prevIds = new Set(prev.map(m => m.id));
-              const newSaved = parsedSaved.filter(m => !prevIds.has(m.id));
-              return [...newSaved, ...prev];
-            });
-          }
-          setVerifyStatus("success");
-        } else {
-          setVerifyStatus("failed");
-        }
-      } catch (err) {
-        console.error("Failed to verify session history", err);
-        setVerifyStatus("failed");
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      if (sessionId === null) {
+        const created = await createSession();
+        if (cancelled) return;
+        localStorage.setItem("orca_session", created);
+        setSessionId(created);
+        setVerifyStatus("success");
+        return;
       }
+
+      const status = await checkSession(sessionId);
+      if (cancelled) return;
+
+      if (status === "unknown-session") {
+        // Stale id: the backend restarted (its session store is in-process),
+        // or this is a client-minted id from before #104. Either way there is
+        // no server-side context behind it, so start a real one — and drop the
+        // local transcript, which would otherwise imply a continuity the
+        // backend can no longer honour for FR-PLAN-5 follow-ups.
+        localStorage.removeItem(`orca_chat_history_${sessionId}`);
+        setMessages([]);
+        const created = await createSession();
+        if (cancelled) return;
+        localStorage.setItem("orca_session", created);
+        setSessionId(created);
+        setVerifyStatus("success");
+        return;
+      }
+
+      if (status === "ok") {
+        const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
+        if (saved) {
+          const parsedSaved = JSON.parse(saved) as ChatMessage[];
+          setMessages((prev) => {
+            const prevIds = new Set(prev.map((m) => m.id));
+            const newSaved = parsedSaved.filter((m) => !prevIds.has(m.id));
+            return [...newSaved, ...prev];
+          });
+        }
+        setVerifyStatus("success");
+        return;
+      }
+
+      // "unreachable": we learned nothing about the session, so keep the id
+      // and the local transcript. verifyStatus stays "failed", which stops us
+      // overwriting stored history with state we can't vouch for.
+      setVerifyStatus("failed");
     };
-    verifySession();
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   // Persist messages whenever they change
   useEffect(() => {
-    if (verifyStatus === "success") {
+    if (sessionId !== null && verifyStatus === "success") {
       localStorage.setItem(`orca_chat_history_${sessionId}`, JSON.stringify(messages));
     }
   }, [messages, sessionId, verifyStatus]);
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     wsClient.close();
-    const newId = `sess_${Math.random().toString(36).substring(2, 9)}`;
-    setSessionId(newId);
-    localStorage.setItem("orca_session", newId);
     setMessages([]);
     setTraceSteps([]);
     setVerifyStatus("pending");
+    const newId = await createSession();
+    localStorage.setItem("orca_session", newId);
+    setSessionId(newId);
+    setVerifyStatus("success");
   };
 
   useEffect(() => {
+    if (sessionId === null) return;  // still bootstrapping — see the effect above
     localStorage.setItem("orca_session", sessionId);
 
     wsClient.connect(sessionId, (msg: ServerMessage) => {
