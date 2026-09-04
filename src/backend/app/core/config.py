@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     gis_boundary_data_path: str = "./data/gis/imbl_mpa_boundaries.geojson"
     imbl_buffer_km: float = 5.0
 
+    # Risk/Safety Agent marginal-conditions thresholds (owner P4, LLD §4.2 /
+    # Figure 2 "Weather conditions marginal ... no active alert?" branch).
+    # At or above either value, with no active alert and no geofence
+    # violation, the verdict is CAUTION rather than SAFE. Configurable, not
+    # hardcoded in risk_safety_agent.py — the LLD gives the branch but no
+    # numbers, so these are the team's defaults and are expected to be tuned.
+    risk_marginal_wind_kmh: float = 25.0
+    risk_marginal_wave_m: float = 2.0
+
 
 @lru_cache
 def get_settings() -> Settings:
