@@ -55,9 +55,13 @@ provision a `databases:` resource — `DATABASE_URL` is set manually on
    - `LLM_API_KEY`, `BHASHINI_API_KEY`, `BHASHINI_USER_ID` — see
      `docs/CREDENTIALS.md` for where to get each and who owns getting it
      (P2/P3 mostly, per SRS §6.4 dependencies)
-   - `WEATHERAPI_KEY` — **optional.** Only the severe-weather *alerts* leg of
-     FR-WX-2 depends on it; forecast, wave and GDACS cyclone data are all
-     keyless, so the app runs degraded-but-working without it (the
+   - `WEATHERAPI_KEY` — **optional, but set it.** It was optional when it only
+     powered the severe-weather *alerts* leg of FR-WX-2. Since #116 the same
+     response is also the standby for the wind/precipitation/visibility leg
+     when Open-Meteo is rate-limited from Render's shared IP (see **Known
+     risks**) — so on the deployed instance this key is often the difference
+     between a weather answer and `INSUFFICIENT_DATA`. The app still runs
+     without it, just with more ways to go unavailable (the
      `WeatherResult.alerts_source_available` flag reports which alert sources
      were actually reachable, so nothing silently reads as "no alerts").
      Free key, email signup, no card: `weatherapi.com/signup.aspx`.
@@ -67,6 +71,13 @@ provision a `databases:` resource — `DATABASE_URL` is set manually on
    > plan, dropped from `render.yaml` at the 2026-09-01 contract-lock sync
    > (PR #28). They no longer exist in the blueprint and setting them does
    > nothing — this step used to name them, which is what #114 fixed.
+
+   - `OPEN_METEO_API_KEY` — **optional, paid.** Leave unset unless someone has
+     bought an Open-Meteo plan. It exists because Render's shared egress IP
+     makes the keyless tier's per-IP quota unreliable — read "Open-Meteo 429s
+     on Render" under **Known risks** before setting it, since the key does
+     nothing unless the three Open-Meteo base URLs are moved to the
+     `customer-` hosts at the same time.
 
    Everything else the backend needs is a non-secret `value:` in `render.yaml`
    (base URLs, `WEATHER_CACHE_TTL_SECONDS`, `GEOCODING_COUNTRY_CODE`, ...) and
@@ -107,6 +118,51 @@ steps.
 - **Split-provider footprint**: the app now depends on two free-tier vendors
   (Render + Supabase) instead of one — one more thing that can independently
   have an outage on demo day. Worth a quick connectivity check the morning of.
+- **Open-Meteo 429s on Render are not our fault and not fully our fix**
+  (#106, #116). Open-Meteo's keyless tier is metered **per client IP**, and it
+  has no keys on that tier to meter instead. Render's free plan gives us no
+  dedicated egress IP: we share one with every other free service on the node,
+  so the quota is spent by traffic we neither generate nor can see, and once an
+  hour/day bucket is empty it stays empty. The symptom is 429s that look
+  constant and that no amount of local backoff clears — which is exactly the
+  point, because backing off is not what refills someone else's bucket.
+
+  What the code does about it (`data_access/http_client.py`, `weather_adapter.py`):
+  falls back to the WeatherAPI `current` block — already fetched for alerts, so
+  no extra request, and on a per-key quota our IP cannot exhaust — whenever
+  Open-Meteo's forecast leg is refused, which is why `WEATHERAPI_KEY` matters
+  more than its "optional" label suggests; caches results for `WEATHER_CACHE_TTL_SECONDS` on a ~5 km grid so repeat
+  queries about one harbour cost one call; caches place-name lookups for the
+  life of the process; sits out a 429 for `Retry-After` (or 30s) per source;
+  and **never retries a 429** — an IP-level bucket cannot clear inside our
+  sub-second budget, so a retry adds load without a chance of succeeding.
+  Failures still degrade to `status='unavailable'` rather than to a made-up
+  wind speed (FR-WX-4). None of this raises the quota.
+
+  **The actual fix**, when a rate-limited demo is unacceptable, is to stop
+  being metered by IP. In rough order of cost:
+
+  1. **Buy an Open-Meteo plan** and set `OPEN_METEO_API_KEY` on `orca-backend`.
+     The quota then follows the account. The key is only honoured on the
+     `customer-` hosts, so set the base URLs **together with** it or the key is
+     silently ignored (the adapter logs a warning if you do this):
+     `WEATHER_FORECAST_BASE_URL=https://customer-api.open-meteo.com/v1`,
+     `MARINE_API_BASE_URL=https://customer-marine-api.open-meteo.com/v1`,
+     `GEOCODING_BASE_URL=https://customer-geocoding-api.open-meteo.com/v1`.
+  2. **Route egress through a static IP** (Render paid plans, or a proxy add-on).
+     Cheaper than a weather plan but buys a *private* free-tier quota, not a
+     bigger one — fine for demo volume, still breakable by our own bursts.
+  3. **Self-host Open-Meteo** — it is open source. No quota at all, but it wants
+     a disk full of model data and is not a demo-week project.
+
+  For demo day specifically, set `WEATHERAPI_KEY` first — it is free and it
+  covers the observed failure. Option 2 plus the existing cache is usually
+  enough after that; option 1 is for when weather has to be reliable.
+
+  Wave height has no standby: WeatherAPI's marine data is a separate endpoint
+  we do not call, so a rate-limited `marine-api.open-meteo.com` is still
+  `unavailable` (FR-WX-4). It has not been the one failing — it is a different
+  host with its own budget.
 
 ## Local development
 

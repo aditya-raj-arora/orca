@@ -178,3 +178,55 @@ def test_reset_cache_hook_clears_entries(
     ga._reset_cache()
     geo.fetch({"place_name": "Chennai"})
     assert len(calls) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Rate-limit handling (#116)
+# --------------------------------------------------------------------------- #
+# GeocodingAdapter is a third Open-Meteo endpoint on the same metered client IP
+# as forecast/marine. Before #116 it called httpx.get directly: no retry, no
+# Retry-After, no cooldown — so a 429 here was answered by calling straight
+# back on the next query. These pin that it now follows the same policy as the
+# weather sources (data_access/http_client.py).
+def test_429_puts_geocoding_in_cooldown_instead_of_calling_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access import http_client
+
+    calls = {"n": 0}
+
+    def _429(url, **_kw):
+        calls["n"] += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "60"},
+            request=httpx.Request("GET", str(url)),
+        )
+
+    monkeypatch.setattr(httpx, "get", _429)
+    adapter = GeocodingAdapter()
+
+    assert adapter.fetch({"place_name": "Kochi"}).status == "unavailable"
+    assert adapter.fetch({"place_name": "Chennai"}).status == "unavailable"
+
+    assert calls["n"] == 1  # second lookup never left the process
+    assert http_client.cooldown_remaining_s("open-meteo/geocoding") > 0
+
+
+def test_geocoding_429_does_not_cool_down_the_weather_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Open-Meteo meters the geocoding API separately from forecast/marine, so
+    # sharing the mechanism must not mean sharing the penalty — a place-name
+    # lookup failing is not a reason to stop asking for wind.
+    from app.data_access import http_client
+
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, **_kw: httpx.Response(429, request=httpx.Request("GET", str(url))),
+    )
+    GeocodingAdapter().fetch({"place_name": "Kochi"})
+
+    assert http_client.cooldown_remaining_s("open-meteo/geocoding") > 0
+    assert http_client.cooldown_remaining_s("open-meteo/forecast") == 0
