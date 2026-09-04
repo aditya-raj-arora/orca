@@ -14,28 +14,34 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
+
 from app.core.config import get_settings
 from app.data_access.base import AdapterResult, DataSourceAdapter
 
 
+def _sync_url(async_url: str) -> str:
+    return async_url.replace("postgresql+asyncpg://", "postgresql://")
+
+
 class GISBoundaryAdapter(DataSourceAdapter):
     def __init__(self) -> None:
-        self._data_path = get_settings().gis_boundary_data_path
+        self._db_url = _sync_url(get_settings().database_url)
 
     def fetch(self, params: dict[str, Any]) -> AdapterResult:
-        """
-        TODO(P4):
-          - Load boundary geometry either from the geofence_boundary table
-            (app/db/schema.sql) if already seeded, or directly from the
-            GeoJSON at self._data_path on first run / cold cache.
-          - This is reference data (slow-changing, per HLD §4.1 entity notes)
-            — a simple in-process cache with manual refresh is fine for the
-            prototype; no need for a background refresh job in this scope.
-          - Same error contract as the other adapters: return
-            status='unavailable' rather than raising if the data can't be
-            loaded, so GeofencingAgent degrades per the LLD §6 error table.
-        """
-        raise NotImplementedError
+        boundary_type = params.get("type")
+        try:
+            with psycopg.connect(self._db_url) as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name, ST_AsGeoJSON(geometry) FROM geofence_boundary WHERE type = %s",
+                    (boundary_type,),
+                )
+                rows = cur.fetchall()
+        except Exception:
+            return AdapterResult(data=None, fetched_at=self._now(), status="unavailable")
+
+        features = [{"name": name, "geometry": geojson} for name, geojson in rows]
+        return AdapterResult(data={"features": features}, fetched_at=self._now(), status="ok")
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
