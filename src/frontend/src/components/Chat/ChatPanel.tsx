@@ -216,6 +216,7 @@ export default function ChatPanel() {
 
         {messages.length === 0 && verifyStatus === "success" && (
           <div className="chat-state-container empty-state">
+            <h2 className="empty-hero-title">ORCA is ready to assist!</h2>
             <button 
               className="empty-icon-wrap btn-large-mic"
               onClick={toggleRecording}

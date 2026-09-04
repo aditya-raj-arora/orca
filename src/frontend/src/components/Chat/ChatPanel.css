@@ -244,6 +244,17 @@ body.dark .chat-history::-webkit-scrollbar-thumb {
   animation: slideUp 0.3s ease-out forwards;
 }
 
+.empty-hero-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text-main);
+  margin: 0 0 1.5rem 0;
+  text-align: center;
+  background: linear-gradient(to right, var(--color-primary), #60a5fa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
 .empty-icon-wrap {
   background: var(--color-surface-hover);
   padding: 1.5rem;
