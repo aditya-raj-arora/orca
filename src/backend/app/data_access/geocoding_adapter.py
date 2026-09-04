@@ -7,7 +7,10 @@ Keyless, and the same provider already used for forecast/marine, so this adds
 no new credential (NFR-SEC-2) and no new vendor dependency.
 
 Owner: P1 (added for the Planner), sitting in P3/P4's data_access/ area and
-following its contract.
+following its contract — including, since #116, its shared outbound-HTTP policy
+(data_access/http_client.py): bounded retry, Retry-After, and a 429 cooldown.
+Open-Meteo meters per client IP, and on Render that IP is shared, so every
+Open-Meteo caller in the codebase has to back off — not just the weather one.
 
 Contract (LLD §2.9): fetch() NEVER raises. A name we cannot resolve returns
 AdapterResult(status='unavailable') with data=None — the Planner then asks
@@ -30,15 +33,14 @@ import threading
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
-
 from app.core.config import get_settings
+from app.data_access import http_client
 from app.data_access.base import AdapterResult, DataSourceAdapter
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT_S = 4.0
 _RESULT_COUNT = 5  # a few candidates so the country filter has something to pick from
+_SOURCE = "open-meteo/geocoding"  # cooldown key; see _search()
 
 # A place name's coordinates do not change, so successful lookups are cached
 # for the life of the process with no TTL — the same name recurs constantly
@@ -71,6 +73,7 @@ class GeocodingAdapter(DataSourceAdapter):
         s = get_settings()
         self._base = s.geocoding_base_url.rstrip("/")
         self._country_code = (s.geocoding_country_code or "").strip().upper()
+        self._api_key = (s.open_meteo_api_key or "").strip()
 
     def fetch(self, params: dict[str, Any]) -> AdapterResult:
         """params: {"place_name": str}. Returns data
@@ -111,6 +114,14 @@ class GeocodingAdapter(DataSourceAdapter):
         return AdapterResult(data=dict(location), fetched_at=now, status="ok")
 
     def _search(self, name: str) -> list[dict[str, Any]]:
+        """Goes through data_access/http_client.py rather than httpx directly
+        (#116). This is a third Open-Meteo endpoint on the same metered client
+        IP as forecast/marine, and on Render that IP is shared with the rest of
+        the node — so a raw httpx.get here retried nothing, respected no
+        Retry-After, and kept hammering the geocoding endpoint while the
+        weather adapter was already sitting out a 429. Its cooldown key is its
+        own (Open-Meteo meters the geocoding API separately from forecast), but
+        the mechanism and the budget are shared."""
         params: dict[str, Any] = {
             "name": name,
             "count": _RESULT_COUNT,
@@ -119,8 +130,9 @@ class GeocodingAdapter(DataSourceAdapter):
         }
         if self._country_code:
             params["countryCode"] = self._country_code
-        r = httpx.get(f"{self._base}/search", params=params, timeout=_HTTP_TIMEOUT_S)
-        r.raise_for_status()
+        if self._api_key:
+            params["apikey"] = self._api_key
+        r = http_client.get(_SOURCE, f"{self._base}/search", params=params)
         return r.json().get("results") or []
 
 

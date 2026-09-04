@@ -68,6 +68,16 @@ services:
       # it visible and tunable without a code change. 0 disables the cache.
       - key: WEATHER_CACHE_TTL_SECONDS
         value: "600"
+      # Open-Meteo commercial key (#116). Render's free plan gives us no
+      # dedicated egress IP, and Open-Meteo meters its keyless tier per client
+      # IP — so we share a quota with every other free service on the node and
+      # see 429s we did not cause and cannot avoid by behaving well. This is
+      # the only actual fix; the cache and cooldown above just keep us quiet
+      # while it is unset. Leave unset (sync:false, no value) until someone
+      # buys a plan, and if you set it, ALSO override the three base URLs to
+      # the `customer-` hosts or the key is ignored — see docs/DEPLOYMENT.md.
+      - key: OPEN_METEO_API_KEY
+        sync: false
       # Planner place-name -> coordinates (#110). Pinned here because the wrong
       # value is silently wrong rather than broken: without the country filter
       # "Kochi" resolves to Kochi, JAPAN and every agent then answers

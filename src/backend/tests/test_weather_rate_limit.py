@@ -5,9 +5,15 @@ NFR-REL-1, NFR-PERF-2).
 Production symptom: Open-Meteo's keyless tier answered the forecast call with
 `429 Too Many Requests`, which the FR-WX-4 contract correctly turned into
 status='unavailable' — i.e. no weather at all for that query. These tests pin
-the three mitigations (result cache, bounded retry, 429 cooldown) AND pin the
-guarantees they must not break: never a fabricated value, never longer than
-the graph's AGENT_TIMEOUT_SECONDS budget.
+the mitigations (result cache, 429 cooldown, bounded retry, WeatherAPI
+fallback, optional customer API key) AND pin the guarantees they must not
+break: never a fabricated value, never longer than the graph's
+AGENT_TIMEOUT_SECONDS budget.
+
+#116 corrected one of #106's: the 429 retry is gone. Open-Meteo meters per
+client IP, Render's free plan shares that IP across the node, and retrying into
+an IP-level bucket only deepens the hole — see data_access/http_client.py.
+Retries now cover 5xx and transport errors only.
 
 Owner: P3. Same `httpx.get` router pattern as tests/test_adapter_faults.py, so
 the real _fetch_* / retry / cache code paths run.
@@ -68,6 +74,10 @@ def _429(retry_after: str | None = None):
 
 def _404(url):
     return httpx.Response(404, request=httpx.Request("GET", url))
+
+
+def _502(url):
+    return httpx.Response(502, request=httpx.Request("GET", url))
 
 
 def _then(*behaviours):
@@ -145,9 +155,9 @@ def test_failures_are_never_cached(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # NFR-REL-1: a transient outage must not stick for the whole TTL. The
-    # forecast 429s through every attempt of the first fetch, then recovers.
+    # forecast 429s on the first fetch, then recovers.
     _healthy(
-        **{"/forecast": _then(_429(), _429(), _429(), _json(_GOOD_FORECAST))}
+        **{"/forecast": _then(_429(), _json(_GOOD_FORECAST))}
     ).install(monkeypatch)
 
     assert wx.fetch(CHENNAI).status == "unavailable"
@@ -178,14 +188,29 @@ def test_expired_entry_is_refetched(
 
 
 # --------------------------------------------------------------------------- #
-# 2. Bounded retry
+# 2. Bounded retry — on congestion, NEVER on a quota
 # --------------------------------------------------------------------------- #
-def test_transient_429_is_retried_and_recovers(
+def test_429_is_not_retried(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The reported production error in its recoverable (per-minute bucket)
-    # form: one 429, then the API answers.
-    router = _healthy(**{"/forecast": _then(_429(), _json(_GOOD_FORECAST))}).install(
+    # #116's correction to #106. Open-Meteo's 429 is an IP-level minute / hour
+    # / day bucket; it cannot clear inside our sub-second backoff, so the extra
+    # attempts only added load to an API that had just refused us — and on
+    # Render's shared egress IP that load is part of what keeps the bucket
+    # empty. Exactly one call, then out.
+    router = _healthy(**{"/forecast": _429()}).install(monkeypatch)
+
+    wx.fetch(CHENNAI)
+
+    assert router.calls["/forecast"] == 1
+
+
+def test_5xx_is_still_retried_and_recovers(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 502 is congestion, not a quota — genuinely worth another attempt.
+    # Dropping the 429 retry must not have dropped this one too.
+    router = _healthy(**{"/forecast": _then(_502, _json(_GOOD_FORECAST))}).install(
         monkeypatch
     )
 
@@ -198,7 +223,8 @@ def test_transient_429_is_retried_and_recovers(
 def test_persistent_429_is_unavailable_never_fabricated(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # FR-WX-4 unchanged: exhausting the retries still degrades honestly.
+    # FR-WX-4 unchanged: refusing to retry still degrades honestly rather than
+    # inventing a wind speed. (No WeatherAPI key here, so no fallback either.)
     _healthy(**{"/forecast": _429()}).install(monkeypatch)
     res = wx.fetch(CHENNAI)
     assert res.status == "unavailable"
@@ -208,9 +234,9 @@ def test_persistent_429_is_unavailable_never_fabricated(
 def test_retry_attempts_are_capped(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    router = _healthy(**{"/forecast": _429()}).install(monkeypatch)
+    router = _healthy(**{"/forecast": _502}).install(monkeypatch)
     wx.fetch(CHENNAI)
-    assert router.calls["/forecast"] == wa._MAX_ATTEMPTS
+    assert router.calls["/forecast"] == wa.http_client.MAX_ATTEMPTS
 
 
 def test_non_retryable_4xx_is_not_retried(
@@ -225,12 +251,11 @@ def test_non_retryable_4xx_is_not_retried(
 def test_retry_never_exceeds_the_agent_timeout_budget(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # NFR-PERF-2: the graph gives a node AGENT_TIMEOUT_SECONDS. A Retry-After
-    # far longer than that budget must make us give up immediately rather than
-    # sleep past the deadline.
+    # NFR-PERF-2: the graph gives a node AGENT_TIMEOUT_SECONDS, and the retry
+    # loop must stay inside it however many attempts the upstream buys.
     from app.orchestration.graph import AGENT_TIMEOUT_SECONDS
 
-    _healthy(**{"/forecast": _429(retry_after="120")}).install(monkeypatch)
+    _healthy(**{"/forecast": _502}).install(monkeypatch)
     started = time.monotonic()
     res = wx.fetch(CHENNAI)
     elapsed = time.monotonic() - started
@@ -248,10 +273,9 @@ def test_429_puts_that_source_in_cooldown(
     router = _healthy(**{"/forecast": _429(retry_after="60")}).install(monkeypatch)
 
     wx.fetch(CHENNAI)
-    calls_after_first = router.calls["/forecast"]
     wx.fetch(KOCHI)  # a different cell, so no cache hit to hide the effect
 
-    assert router.calls["/forecast"] == calls_after_first  # not called again
+    assert router.calls["/forecast"] == 1  # the second fetch never left the box
     assert wa._cooldown_remaining_s("open-meteo/forecast") > 0
 
 
@@ -280,7 +304,7 @@ def test_cooldown_is_capped(
     # the demo.
     _healthy(**{"/forecast": _429(retry_after="999999")}).install(monkeypatch)
     wx.fetch(CHENNAI)
-    assert wa._cooldown_remaining_s("open-meteo/forecast") <= wa._MAX_COOLDOWN_S
+    assert wa._cooldown_remaining_s("open-meteo/forecast") <= wa.http_client.MAX_COOLDOWN_S
 
 
 def test_unparseable_retry_after_falls_back_to_the_default_cooldown(
@@ -291,7 +315,7 @@ def test_unparseable_retry_after_falls_back_to_the_default_cooldown(
         **{"/forecast": _429(retry_after="Wed, 21 Oct 2026 07:28:00 GMT")}
     ).install(monkeypatch)
     wx.fetch(CHENNAI)
-    assert 0 < wa._cooldown_remaining_s("open-meteo/forecast") <= wa._DEFAULT_COOLDOWN_S
+    assert 0 < wa._cooldown_remaining_s("open-meteo/forecast") <= wa.http_client.DEFAULT_COOLDOWN_S
 
 
 # --------------------------------------------------------------------------- #
@@ -434,3 +458,67 @@ def test_alerts_helper_preserves_none_versus_empty() -> None:
     assert _wapi_alerts({}) == []
     assert _wapi_alerts({"alerts": {"alert": []}}) == []
     assert _wapi_alerts({"alerts": {"alert": [{"headline": "x"}]}}) == [{"headline": "x"}]
+
+
+# --------------------------------------------------------------------------- #
+# 5. Shared-IP escape hatch: the Open-Meteo customer key (#116)
+# --------------------------------------------------------------------------- #
+# The cache, the cooldown and the WeatherAPI fallback all make the best of a
+# quota metered against an IP we do not control. A key is the only thing that
+# stops us being metered that way at all.
+def test_no_apikey_param_when_no_key_is_configured(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The keyless tier stays the default and byte-identical — an `apikey=` on a
+    # free host is at best noise.
+    seen: list[dict] = []
+    router = _healthy()
+
+    def _spy(url, **kw):
+        seen.append(kw.get("params") or {})
+        return router(url, **kw)
+
+    monkeypatch.setattr(httpx, "get", _spy)
+    wx.fetch(CHENNAI)
+    assert seen and all("apikey" not in p for p in seen)
+
+
+def test_apikey_is_sent_on_forecast_and_marine_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, dict] = {}
+    router = _healthy()
+
+    def _spy(url, **kw):
+        text = str(url)
+        for k in ("/marine", "/forecast"):
+            if k in text:
+                seen[k] = kw.get("params") or {}
+                break
+        return router(url, **kw)
+
+    monkeypatch.setattr(httpx, "get", _spy)
+    wx = WeatherDataAdapter()
+    monkeypatch.setattr(wx, "_open_meteo_key", "sk-test")
+
+    assert wx.fetch(CHENNAI).status == "ok"
+    assert seen["/forecast"]["apikey"] == "sk-test"
+    assert seen["/marine"]["apikey"] == "sk-test"
+
+
+def test_key_on_a_free_host_warns_that_it_will_be_ignored(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Open-Meteo honours the key only on `customer-` hosts. A paid key silently
+    # doing nothing is an hour of someone's debugging, so say so at startup.
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("OPEN_METEO_API_KEY", "sk-test")
+    try:
+        with caplog.at_level("WARNING"):
+            WeatherDataAdapter()
+    finally:
+        get_settings.cache_clear()
+
+    assert any("customer-" in r.getMessage() for r in caplog.records)
