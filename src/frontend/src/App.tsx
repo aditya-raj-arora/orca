@@ -31,7 +31,7 @@ export default function App() {
     <div className="app-layout">
       <header className="app-header">
         <div className="header-left">
-          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{color: "var(--color-primary)"}}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--color-primary)" }}>
             <path d="M2 6c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 3c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 3"></path>
             <path d="M2 12c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 9c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 9"></path>
             <path d="M2 18c.6 0 1.2-.2 1.7-.6l2.3-2A4 4 0 0 1 8.6 15c.8 0 1.5.3 2.1.8l2.6 2.3c.5.5 1.2.7 1.9.7.7 0 1.4-.2 2-.7l2.5-2.2A4 4 0 0 1 22 15"></path>
@@ -41,8 +41,8 @@ export default function App() {
         </div>
 
         <div className="header-right">
-          <button 
-            className="mobile-view-toggle" 
+          <button
+            className="mobile-view-toggle"
             onClick={() => setShowMobileMap(!showMobileMap)}
             aria-label="Toggle Map View"
           >
@@ -84,11 +84,11 @@ export default function App() {
               </svg>
             )}
           </button>
-          <div className="status-dot" style={{marginLeft: '0.5rem'}}></div>
+          <div className="status-dot" style={{ marginLeft: '0.5rem' }}></div>
           <span>System Online</span>
         </div>
       </header>
-      
+
       <div className={`main-content ${showMobileMap ? 'show-map' : 'show-chat'}`}>
         <div className="glass-panel chat-panel-container">
           <ChatPanel />
