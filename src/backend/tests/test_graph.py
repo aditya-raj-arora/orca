@@ -313,3 +313,42 @@ def test_float_rounding_keeps_raw_precision_out_of_the_prompt():
     assert _round_floats({"within_mpa": False}) == {"within_mpa": False}
     passthrough = {"name": "Kochi", "n": 3, "z": None}
     assert _round_floats(passthrough) == passthrough
+
+
+async def test_synthesis_node_flags_a_degraded_compose():
+    """#121: the node must report whether it actually synthesised, so the
+    Gateway can withhold a verdict it cannot explain."""
+    from app.orchestration.graph import _synthesis_node
+    from app.schemas.synthesis import ExecutionPlan
+
+    class _Exploding:
+        def compose(self, *_a, **_k):
+            raise RuntimeError("stub: synthesis blew up")
+
+    out = await _synthesis_node(_Exploding())({"plan": ExecutionPlan(trace=[]), "results": {}})
+    assert out["synthesis_ok"] is False
+
+
+async def test_synthesis_node_flags_a_successful_compose():
+    from app.orchestration.graph import _synthesis_node
+    from app.schemas.synthesis import ComposedResponse, ExecutionPlan
+
+    class _Fine:
+        def compose(self, *_a, **_k):
+            return ComposedResponse(text="All good.")
+
+    out = await _synthesis_node(_Fine())({"plan": ExecutionPlan(trace=[]), "results": {}})
+    assert out["synthesis_ok"] is True
+    assert out["composed"].text == "All good."
+
+
+async def test_clarification_path_counts_as_successful_synthesis():
+    """The LLM is skipped deliberately there — nothing failed, so the response
+    must not be treated as degraded."""
+    from app.orchestration.graph import _synthesis_node
+    from app.schemas.synthesis import ExecutionPlan
+
+    plan = ExecutionPlan(trace=[], needs_clarification=True, clarification_prompt="Where?")
+    out = await _synthesis_node(object())({"plan": plan, "results": {}})
+    assert out["synthesis_ok"] is True
+    assert out["composed"].text == "Where?"

@@ -188,6 +188,22 @@ def _final_response(
     # else in this system: never default to a verdict that reads as SAFE.
     verdict = risk.verdict if isinstance(risk, RiskVerdict) else "INSUFFICIENT_DATA"
 
+    # #121: same rule, applied to the case where the *explanation* is what
+    # failed. Synthesis degrading to graph._unavailable_composed_response()
+    # used to still render a green SAFE badge above "I couldn't put together an
+    # answer" — a verdict with zero supporting reasoning, which is exactly what
+    # FR-SYN-2 and SynthesisAgent's own refusal-to-ship checks exist to
+    # prevent. Withholding the verdict is not fabricating one: Risk's
+    # computation is unchanged, it is simply not presented as actionable when
+    # we cannot say why.
+    if not state.get("synthesis_ok", True):
+        logger.warning(
+            "Gateway: synthesis degraded — reporting INSUFFICIENT_DATA instead of "
+            "the unexplained %s verdict (#121)",
+            verdict,
+        )
+        verdict = "INSUFFICIENT_DATA"
+
     if composed is None:
         return QueryResponse(
             text="",
