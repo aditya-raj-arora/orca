@@ -263,3 +263,53 @@ def test_unavailable_weather_sentinel_does_not_claim_alerts_were_checked():
     assert sentinel.status == "unavailable"
     assert sentinel.alerts_source_available is False
     assert sentinel.active_alerts == []
+
+
+def test_synthesis_gets_a_larger_budget_than_the_specialists():
+    """#118: compose() makes up to TWO sequential Gemini calls (initial +
+    regeneration when a safety check rejects the first), so the 6s sized for a
+    specialist's single HTTP call made a tripped safety check into a timeout
+    and shipped the degraded "couldn't put together an answer" string."""
+    from app.orchestration.graph import AGENT_TIMEOUT_SECONDS, SYNTHESIS_TIMEOUT_SECONDS
+
+    assert SYNTHESIS_TIMEOUT_SECONDS > AGENT_TIMEOUT_SECONDS
+
+
+async def test_call_bounded_reads_the_global_timeout_at_call_time():
+    """Regression guard: `timeout` must not be a default argument bound to
+    AGENT_TIMEOUT_SECONDS at import — tests/integration/test_failure_matrix.py
+    patches that global down to keep the timeout row fast, and an early binding
+    silently disables the patch (caught exactly that way)."""
+
+    from app.orchestration import graph as graph_module
+
+    original = graph_module.AGENT_TIMEOUT_SECONDS
+    graph_module.AGENT_TIMEOUT_SECONDS = 0.1
+    try:
+        def _hang():
+            import time
+
+            time.sleep(1.0)
+            return "should have timed out"
+
+        result, trace = await graph_module._call_bounded(
+            _hang, unavailable="sentinel", agent_label="Test Agent"
+        )
+    finally:
+        graph_module.AGENT_TIMEOUT_SECONDS = original
+
+    assert result == "sentinel"
+    assert "timed out" in trace
+
+
+def test_float_rounding_keeps_raw_precision_out_of_the_prompt():
+    """#118: Gemini verbalises the payload numbers directly — a real response
+    read "sitting 277.6379475729435 km from the IMBL"."""
+    from app.orchestration.synthesis_agent import _round_floats
+
+    assert _round_floats({"imbl_distance_km": 277.6379475729435}) == {"imbl_distance_km": 277.64}
+    assert _round_floats([1.23456, {"x": 9.87654}]) == [1.23, {"x": 9.88}]
+    # bool is an int subclass, not a quantity — must survive untouched
+    assert _round_floats({"within_mpa": False}) == {"within_mpa": False}
+    passthrough = {"name": "Kochi", "n": 3, "z": None}
+    assert _round_floats(passthrough) == passthrough

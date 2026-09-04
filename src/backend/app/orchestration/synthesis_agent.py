@@ -111,7 +111,31 @@ def _serialize_result(result: object) -> dict:
             return o.isoformat()
         return str(o)
 
-    return json.loads(json.dumps(data, default=_default))
+    return _round_floats(json.loads(json.dumps(data, default=_default)))
+
+
+def _round_floats(value: object, places: int = 2) -> object:
+    """Round every float in the prompt payload (#118).
+
+    The LLM verbalises these numbers directly, and full float precision leaks
+    into the answer — a real response read "sitting 277.6379475729435 km from
+    the IMBL". The Risk agent already formats its own strings with :.1f; this
+    does the same job for the values Synthesis hands the model raw, rather than
+    hoping the model rounds them.
+
+    Prompt-payload only: nothing downstream computes on these, so this cannot
+    affect a verdict or a distance check — it only changes how a number reads
+    in prose. bool is excluded because it is an int subclass, not a quantity.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return round(value, places)
+    if isinstance(value, dict):
+        return {k: _round_floats(v, places) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_round_floats(v, places) for v in value]
+    return value
 
 
 def _contains_phrase(text: str, phrase: str) -> bool:
