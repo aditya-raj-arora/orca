@@ -101,6 +101,14 @@ class WSClient {
       console.error("WebSocket is not open. Cannot send message.");
     }
   }
+
+  close() {
+    if (this.ws) {
+      this.ws.onclose = null; // Prevent reconnect loop
+      this.ws.close();
+      this.ws = null;
+    }
+  }
 }
 
 export const wsClient = new WSClient();

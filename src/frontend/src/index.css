@@ -1,28 +1,57 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
 :root {
-  --color-bg-deep: #020617;
-  --color-bg-ocean: #0f172a;
-  --color-glass-panel: rgba(15, 23, 42, 0.6);
-  --color-glass-border: rgba(255, 255, 255, 0.08);
+  /* Humanistic Marine Theme */
+  --color-bg-deep: #fafaf9; /* Warm stone/cream */
+  --color-bg-ocean: #ffffff; /* Pure white panels */
+  --color-surface: #ffffff;
+  --color-surface-hover: #f5f5f4;
+  --color-border: rgba(28, 25, 23, 0.06); /* Extremely subtle border */
   
-  --color-primary: #06b6d4; /* cyan */
-  --color-primary-hover: #0891b2;
-  --color-primary-faded: rgba(6, 182, 212, 0.15);
+  /* Soft, Friendly Accents */
+  --color-primary: #3b82f6; /* Coastal Blue */
+  --color-primary-hover: #2563eb;
+  --color-accent: #0ea5e9; /* Light Ocean */
   
-  --color-text-main: #f8fafc;
-  --color-text-muted: #94a3b8;
+  --color-text-main: #1c1917; /* Stone 900 */
+  --color-text-muted: #78716c; /* Stone 500 */
   
-  --color-safe: #10b981;
-  --color-safe-faded: rgba(16, 185, 129, 0.15);
+  --color-safe: #10b981; 
+  --color-safe-faded: rgba(16, 185, 129, 0.1);
   --color-caution: #f59e0b;
-  --color-caution-faded: rgba(245, 158, 11, 0.15);
   --color-danger: #ef4444;
-  --color-danger-faded: rgba(239, 68, 68, 0.15);
 
-  --shadow-glow: 0 0 20px rgba(6, 182, 212, 0.2);
-  --radius-lg: 16px;
+  /* Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: inherit; /* Disabled monospace for humanistic look */
+
+  /* Soft, organic shapes and shadows */
+  --radius-lg: 20px;
   --radius-md: 12px;
+  
+  --shadow-soft: 0 4px 20px rgba(0, 0, 0, 0.03), 0 2px 8px rgba(0, 0, 0, 0.02);
+  --shadow-hover: 0 10px 30px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+body.dark {
+  --color-bg-deep: #1c1917; /* Stone 900 */
+  --color-bg-ocean: #292524; /* Stone 800 */
+  --color-surface: #292524;
+  --color-surface-hover: #44403c; /* Stone 700 */
+  --color-border: rgba(255, 255, 255, 0.08); 
+  
+  --color-text-main: #fafaf9; /* Stone 50 */
+  --color-text-muted: #a8a29e; /* Stone 400 */
+  
+  --shadow-soft: 0 4px 20px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-hover: 0 10px 30px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+body.dark .leaflet-layer,
+body.dark .leaflet-control-zoom-in,
+body.dark .leaflet-control-zoom-out,
+body.dark .leaflet-control-attribution {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
 }
 
 * {
@@ -32,36 +61,33 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   background-color: var(--color-bg-deep);
   color: var(--color-text-main);
-  line-height: 1.5;
+  line-height: 1.6;
   height: 100dvh;
   width: 100%;
   overflow: hidden;
-  
-  /* Deep ocean mesh gradient */
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(15, 23, 42, 1) 0, transparent 50%), 
-    radial-gradient(at 50% 100%, rgba(8, 47, 73, 0.5) 0, transparent 50%), 
-    radial-gradient(at 100% 0%, rgba(2, 6, 23, 1) 0, transparent 50%);
-  background-size: cover;
-  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.01em; /* Tighter for approachable feel */
 }
 
-/* Glassmorphism Utility */
+/* Base Panel */
 .glass-panel {
-  background: var(--color-glass-panel);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--color-glass-border);
+  background: var(--color-bg-ocean);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-soft);
+  transition: box-shadow 0.3s ease;
+}
+
+.glass-panel:hover {
+  box-shadow: var(--shadow-hover);
 }
 
 /* --- Layout --- */
@@ -71,34 +97,104 @@ h1, h2, h3, h4, h5, h6 {
   height: 100dvh;
 }
 
+/* Elegant, Clean Header */
 .app-header {
-  padding: 1rem 1.5rem;
+  padding: 1.25rem 2rem;
   display: flex;
-  align-items: baseline;
-  gap: 1rem;
-  background: rgba(2, 6, 23, 0.7);
-  border-bottom: 1px solid var(--color-glass-border);
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  z-index: 10;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .app-header h1 {
   font-size: 1.5rem;
-  color: var(--color-primary);
-  letter-spacing: 0.1em;
-  font-weight: 800;
-  margin: 0;
+  color: var(--color-text-main);
+  font-weight: 600;
 }
 
 .app-header .subtitle {
-  font-size: 0.875rem;
+  font-size: 1rem;
   color: var(--color-text-muted);
+  font-weight: 400;
+  margin-left: 0.5rem;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--color-surface);
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-soft);
+  color: var(--color-text-main);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  min-height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-safe);
+  box-shadow: 0 0 8px var(--color-safe);
+  animation: pulse-safe 2s infinite alternate;
+}
+
+@keyframes pulse-safe {
+  from { opacity: 0.6; box-shadow: 0 0 4px var(--color-safe); }
+  to { opacity: 1; box-shadow: 0 0 12px var(--color-safe); }
+}
+
+.theme-toggle,
+.mobile-view-toggle {
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  border-radius: 99px;
+  transition: all 0.2s ease;
+}
+
+.mobile-view-toggle {
+  display: none; /* Hidden on desktop */
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.theme-toggle:hover,
+.mobile-view-toggle:hover {
+  color: var(--color-text-main);
+  background: var(--color-surface-hover);
+}
+
+/* Main Layout Grid */
 .main-content {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 2fr;
-  gap: 1rem;
-  padding: 1rem;
+  grid-template-columns: 420px 1fr;
+  gap: 1.5rem; /* Re-introduce gap for floating panels */
+  padding: 0 1.5rem 1.5rem 1.5rem;
   overflow: hidden;
 }
 
@@ -109,55 +205,39 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .map-trace-container {
-  display: grid;
-  grid-template-rows: 2fr 1fr;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  gap: 1rem;
+  position: relative;
 }
 
-/* Mobile responsive & Low-end device optimization */
+/* Mobile responsive */
 @media (max-width: 768px) {
-  body {
-    overflow-y: auto;
-    /* Remove heavy radial gradients on mobile for performance */
-    background-image: none;
-    background-color: var(--color-bg-deep);
+  .app-header {
+    padding: 1rem;
+  }
+  .app-header h1 {
+    font-size: 1.25rem;
+  }
+  .subtitle {
+    display: none; /* Hide subtitle to save space, keep ORCA */
+  }
+  .mobile-view-toggle {
+    display: flex; /* Show toggle on mobile */
   }
   
-  .glass-panel {
-    /* Remove expensive blur on mobile */
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    background: rgba(15, 23, 42, 0.95);
-  }
-
   .main-content {
     grid-template-columns: 1fr;
-    height: auto;
-    min-height: calc(100dvh - 64px);
-    overflow: visible;
-    padding: 0.5rem;
+    grid-template-rows: 1fr; /* Only one element takes the full height */
+    padding: 0 1rem 1rem 1rem;
+    gap: 0;
   }
   
-  .chat-panel-container {
-    height: 60dvh;
+  /* Toggle logic */
+  .main-content.show-chat .map-trace-container {
+    display: none !important;
   }
-  
-  .map-trace-container {
-    height: 80dvh;
-  }
-
-  .chat-input-area {
-    padding: 0.75rem;
-  }
-
-  /* Hide map and trace entirely when chat input is focused to save space for keyboard */
-  .app-layout:has(.chat-input:focus) .map-trace-container {
-    display: none;
-  }
-  
-  .app-layout:has(.chat-input:focus) .chat-panel-container {
-    height: calc(100dvh - 64px); /* take full height when keyboard is up */
+  .main-content.show-map .chat-panel-container {
+    display: none !important;
   }
 }
-
