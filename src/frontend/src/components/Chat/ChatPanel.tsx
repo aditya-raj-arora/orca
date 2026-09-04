@@ -8,6 +8,7 @@
  */
 import { useEffect, useState, useRef } from "react";
 import { wsClient } from "../../api/wsClient";
+import { MAP_UPDATE_EVENT } from "../../api/mapPayload";
 import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
 import "./ChatPanel.css";
 
@@ -39,6 +40,9 @@ export default function ChatPanel() {
       if (msg.type === "final_response") {
         setTraceSteps([]);
         setIsProcessing(false);
+        // Hand map_payload to MapPanel (via App) using the same window-event
+        // pattern as the trace_update dispatch below. FR-UI-2 / FR-GEO-3, #35.
+        window.dispatchEvent(new CustomEvent(MAP_UPDATE_EVENT, { detail: msg.map_payload }));
         setMessages((prev) => [
           ...prev,
           {

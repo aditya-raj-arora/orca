@@ -5,18 +5,37 @@
  * ownership matches CODEOWNERS. Coordinate on the shared shell below rather
  * than each rewriting App.tsx independently.
  *
- * Reference: HLD v1.0 §3 "Web Client" row, FR-UI-1 to FR-UI-4.
- *
- * (Trivial edit — verifying the CI -> deploy-frontend gate end-to-end.)
+ * Reference: HLD v1.0 §3 "Web Client", FR-UI-1 to FR-UI-4.
  */
+import { useState, useEffect } from "react";
 import ChatPanel from "./components/Chat/ChatPanel";
 import MapPanel from "./components/Map/MapPanel";
+import type { MarkerData, ZoneData } from "./components/Map/MapPanel";
 import TraceViewer from "./components/TraceViewer/TraceViewer";
+import { MAP_UPDATE_EVENT, normalizeMapPayload } from "./api/mapPayload";
 
 export default function App() {
-  // TODO(P5/P6): lift shared session/query state up here (or into a context /
-  // small store in src/state/) once ChatPanel needs to trigger MapPanel and
-  // TraceViewer updates from the same WebSocket stream (LLD §5.2).
+  const [markers, setMarkers] = useState<MarkerData[]>([]);
+  const [zones, setZones] = useState<ZoneData[]>([]);
+
+  // ChatPanel owns the single wsClient connection (LLD §5.2 — one query per
+  // connection, session-scoped) and re-broadcasts each final_response's
+  // map_payload as a window event, mirroring its existing trace_update
+  // dispatch. Listening here keeps the map on live results without opening a
+  // second socket against the same backend.
+  useEffect(() => {
+    const handleMapUpdate = (event: Event) => {
+      const { markers: nextMarkers, zones: nextZones } = normalizeMapPayload(
+        (event as CustomEvent<unknown>).detail
+      );
+      setMarkers(nextMarkers);
+      setZones(nextZones);
+    };
+
+    window.addEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
+    return () => window.removeEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
+  }, []);
+
   return (
     <div className="app-layout">
       <header className="app-header">
@@ -28,7 +47,7 @@ export default function App() {
           <ChatPanel />
         </div>
         <div className="glass-panel map-trace-container">
-          <MapPanel />
+          <MapPanel markers={markers} zones={zones} />
           <TraceViewer />
         </div>
       </div>
