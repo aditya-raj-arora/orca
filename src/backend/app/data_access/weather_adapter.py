@@ -6,6 +6,8 @@ specific API shapes. Confirmed sources (docs/p3-data-source-spike.md §2):
   * Open-Meteo Marine API    — wave height / period / direction (FR-WX-1). No key.
   * WeatherAPI.com           — government severe-weather / cyclone alerts
                                (FR-WX-2), lat/lon native. Free key, no card.
+                               Since #116 also the standby for the forecast
+                               leg when Open-Meteo is rate-limited.
   * GDACS GeoRSS             — tropical-cyclone events, North Indian Ocean
                                (FR-WX-2). No key.
 
@@ -19,16 +21,27 @@ if both fail, the result is still 'ok' but data['alerts_source_available'] is
 False so the agent / Synthesis can say "alert data unavailable" rather than
 imply "no alerts" (NFR-REL-1).
 
-Rate limiting (#106): Open-Meteo's keyless tier is quota'd per minute / hour /
-day and answers a burst with 429. Three things keep us inside it, in order of
-how much they actually buy:
+Rate limiting (#106, revised #116): Open-Meteo meters its keyless tier per
+CLIENT IP and answers an exhausted bucket with 429. On Render's free plan that
+IP is shared with every other service on the node, so the quota is not ours to
+control and can be empty before we make a single call — the "always
+rate-limited" symptom. Four things keep us inside it, in order of how much they
+actually buy:
 
-  1. A short-TTL result cache keyed on a coarse lat/lon grid, so N queries
+  1. A WeatherAPI standby for the forecast leg. When Open-Meteo's forecast
+     429s we derive wind/precipitation/visibility from the forecast.json
+     response we ALREADY fetched for alerts — different host, per-key quota,
+     zero extra requests. This is what keeps the deployed instance answering
+     at all, and it is free.
+  2. OPEN_METEO_API_KEY. Moves us to the customer endpoint where the quota is
+     billed to the account instead of to Render's shared IP. Optional and
+     paid — unset, everything else still applies.
+  3. A short-TTL result cache keyed on a coarse lat/lon grid, so N queries
      about the same harbour inside the TTL cost one upstream call.
-  2. A deadline-bounded retry on 429/5xx that honours Retry-After — rides out
-     a per-minute bucket without ever exceeding AGENT_TIMEOUT_SECONDS.
-  3. A per-source cooldown after a 429, so an hour/day quota stops us calling
-     at all instead of us adding load to an API that is already refusing.
+  4. A per-source cooldown after a 429 (data_access/http_client.py), shared
+     with GeocodingAdapter because it is the same provider on the same IP.
+  5. A deadline-bounded retry on 5xx / transport errors — never on 429, which
+     is a quota and cannot clear inside our budget.
 
 None of these ever soften the FR-WX-4 contract: a cache hit is real data with
 its real observation timestamp, and everything else still degrades to
@@ -44,39 +57,19 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.core.config import get_settings
+from app.data_access import http_client
 from app.data_access.base import AdapterResult, DataSourceAdapter
+from app.data_access.http_client import RateLimitedError  # noqa: F401 (re-export)
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT_S = 4.0          # per attempt; 4 sources run in parallel, so well
-                              # inside the graph's 6s AGENT_TIMEOUT_SECONDS.
-_SOURCE_BUDGET_S = 5.0        # total wall clock for one source INCLUDING its
-                              # retries. Every retry is bounded by this
-                              # deadline, so hardening the adapter against 429
-                              # can never push a node past AGENT_TIMEOUT_SECONDS
-                              # (orchestration/graph.py) — a source that runs
-                              # out of budget simply reports failure early.
-_MAX_ATTEMPTS = 3
-_BACKOFF_BASE_S = 0.25        # 0.25s, 0.5s — deliberately short: the budget
-_MAX_BACKOFF_S = 1.0          # above, not the backoff curve, is the real bound.
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _GDACS_TC_RADIUS_KM = 1200.0  # a TC further than this from the query point is
                               # not "active weather" for that location.
-
-# --- 429 cooldown ------------------------------------------------------- #
-# A 429 from an hourly/daily quota does not clear in a backoff window, and
-# retrying into it adds load to an API that is already refusing us. After a 429
-# we stop calling that source until Retry-After (or _DEFAULT_COOLDOWN_S when
-# the header is absent) has passed. Capped so a hostile/garbled header cannot
-# park a source for the rest of the demo.
-_DEFAULT_COOLDOWN_S = 30.0
-_MAX_COOLDOWN_S = 300.0
-_COOLDOWN_LOCK = threading.Lock()
-_COOLDOWN: dict[str, float] = {}  # source label -> time.monotonic() deadline
 
 # --- result cache ------------------------------------------------------- #
 # Open-Meteo runs an ~11 km model grid refreshed roughly every 15 min, so two
@@ -108,95 +101,14 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class RateLimitedError(Exception):
-    """Raised instead of issuing a request to a source that is inside its 429
-    cooldown. Caught by _safe like any other source failure — the point is to
-    fail without adding load, not to fail differently."""
-
-
-# ---------------------------------------------------------------------- #
-# Rate-limit handling (#106)
-# ---------------------------------------------------------------------- #
-def _cooldown_remaining_s(source: str) -> float:
-    with _COOLDOWN_LOCK:
-        until = _COOLDOWN.get(source)
-    return 0.0 if until is None else max(0.0, until - time.monotonic())
-
-
-def _start_cooldown(source: str, retry_after_s: float | None) -> None:
-    delay = _DEFAULT_COOLDOWN_S if retry_after_s is None else retry_after_s
-    delay = min(max(delay, 0.0), _MAX_COOLDOWN_S)
-    with _COOLDOWN_LOCK:
-        _COOLDOWN[source] = time.monotonic() + delay
-    logger.warning(
-        "WeatherDataAdapter: %s rate-limited (429) — pausing calls to it for %.0fs",
-        source,
-        delay,
-    )
-
-
-def _retry_after_s(response: httpx.Response) -> float | None:
-    """RFC 9110 Retry-After, delta-seconds form only. The HTTP-date form is
-    rare on rate limiters and is not worth a clock-skew bug here — treating it
-    as absent just falls back to _DEFAULT_COOLDOWN_S."""
-    raw = response.headers.get("Retry-After")
-    if raw is None:
-        return None
-    try:
-        return max(0.0, float(raw.strip()))
-    except ValueError:
-        return None
-
-
 def _get(source: str, url: str, **kwargs: Any) -> httpx.Response:
-    """httpx.get hardened against transient upstream refusal.
+    """Thin alias for the shared policy in data_access/http_client.py, kept so
+    the per-source fetchers below read as they always did."""
+    return http_client.get(source, url, **kwargs)
 
-    Retries 429 / 5xx / transport errors up to _MAX_ATTEMPTS, honouring
-    Retry-After, with every attempt AND every sleep bounded by a
-    _SOURCE_BUDGET_S deadline. Raises on final failure (the caller's _safe
-    turns that into None, i.e. the existing degrade path) — a non-retryable
-    4xx still raises on the first attempt exactly as raise_for_status() did.
-    """
-    cooling = _cooldown_remaining_s(source)
-    if cooling > 0:
-        raise RateLimitedError(f"{source}: in 429 cooldown for another {cooling:.0f}s")
 
-    deadline = time.monotonic() + _SOURCE_BUDGET_S
-    last_error: Exception | None = None
-
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        retry_after: float | None = None
-        try:
-            response = httpx.get(url, timeout=min(_HTTP_TIMEOUT_S, remaining), **kwargs)
-        except httpx.TransportError as exc:  # connect/read/write/pool errors
-            last_error = exc
-        else:
-            if response.status_code not in _RETRYABLE_STATUS:
-                response.raise_for_status()  # non-retryable 4xx -> raise as before
-                return response
-            retry_after = _retry_after_s(response)
-            if response.status_code == 429:
-                _start_cooldown(source, retry_after)
-            last_error = httpx.HTTPStatusError(
-                f"{source}: retryable {response.status_code} from {url}",
-                request=response.request,
-                response=response,
-            )
-
-        if attempt == _MAX_ATTEMPTS:
-            break
-        delay = min(_MAX_BACKOFF_S, _BACKOFF_BASE_S * (2 ** (attempt - 1)))
-        if retry_after is not None:
-            delay = max(delay, retry_after)  # the server's number wins if larger
-        if delay >= deadline - time.monotonic():
-            break  # no budget left for another attempt; give up now, don't oversleep
-        time.sleep(delay)
-
-    assert last_error is not None  # loop only exits early after setting it
-    raise last_error
+def _cooldown_remaining_s(source: str) -> float:
+    return http_client.cooldown_remaining_s(source)
 
 
 # ---------------------------------------------------------------------- #
@@ -241,8 +153,7 @@ def _reset_rate_limit_state() -> None:
     tests/conftest.py). Not used in production code."""
     with _CACHE_LOCK:
         _RESULT_CACHE.clear()
-    with _COOLDOWN_LOCK:
-        _COOLDOWN.clear()
+    http_client.reset_cooldowns()
 
 
 def _rough_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -258,6 +169,22 @@ def _rough_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def _warn_if_not_customer_host(*base_urls: str) -> None:
+    """An Open-Meteo key is only honoured on the `customer-` hosts. Pointed at
+    the free hosts it is ignored and we keep spending the shared-IP quota — a
+    paid key that silently does nothing is exactly the failure someone would
+    debug for an hour, so say it once at construction."""
+    for base in base_urls:
+        host = urlsplit(base).hostname or ""
+        if not host.startswith("customer-"):
+            logger.warning(
+                "WeatherDataAdapter: OPEN_METEO_API_KEY is set but %s is not a "
+                "'customer-' host — the key will be ignored and calls will keep "
+                "using the shared-IP free quota. See docs/DEPLOYMENT.md.",
+                base,
+            )
+
+
 class WeatherDataAdapter(DataSourceAdapter):
     def __init__(self) -> None:
         s = get_settings()
@@ -267,6 +194,13 @@ class WeatherDataAdapter(DataSourceAdapter):
         self._weatherapi_key = s.weatherapi_key
         self._gdacs_base = s.gdacs_base_url.rstrip("/")
         self._cache_ttl_s = s.weather_cache_ttl_seconds
+        # Optional (#116). Set, it moves forecast/marine onto Open-Meteo's
+        # customer quota instead of Render's shared egress IP — see the
+        # rate-limiting note in the module docstring. Unset, the keyless
+        # endpoints are used exactly as before.
+        self._open_meteo_key = (s.open_meteo_api_key or "").strip()
+        if self._open_meteo_key:
+            _warn_if_not_customer_host(self._forecast_base, self._marine_base)
 
     # ------------------------------------------------------------------ #
     # Public contract
@@ -295,20 +229,33 @@ class WeatherDataAdapter(DataSourceAdapter):
         with ThreadPoolExecutor(max_workers=4) as pool:
             f_forecast = pool.submit(self._safe, self._fetch_forecast, lat, lon)
             f_marine = pool.submit(self._safe, self._fetch_marine, lat, lon)
-            f_wapi = pool.submit(self._safe, self._fetch_weatherapi_alerts, lat, lon)
+            f_wapi = pool.submit(self._safe, self._fetch_weatherapi, lat, lon)
             f_gdacs = pool.submit(self._safe, self._fetch_gdacs_tc, lat, lon)
             forecast = f_forecast.result()
             marine = f_marine.result()
-            wapi_alerts = f_wapi.result()
+            wapi = f_wapi.result()
             gdacs_alerts = f_gdacs.result()
 
-        # FR-WX-4: forecast and marine are both required for a WeatherResult
-        # (wind AND wave). Missing either -> unavailable, never fabricated.
+        # #116: when Open-Meteo's forecast leg is rate-limited, derive it from
+        # the WeatherAPI payload we ALREADY fetched for alerts — a second use
+        # of a response in hand, so zero extra HTTP requests, on a different
+        # host with a per-key quota that Render's shared egress IP cannot
+        # exhaust. This is the difference between a degraded answer and no
+        # answer at all on the deployed instance.
+        forecast_source = "open-meteo"
+        if forecast is None:
+            forecast = _forecast_from_weatherapi(wapi)
+            forecast_source = "weatherapi" if forecast is not None else "none"
+
+        # FR-WX-4 unchanged: wind AND wave are both required for a
+        # WeatherResult. Marine has no fallback (WeatherAPI's marine data is a
+        # separate paid endpoint we do not call), so losing it is still
+        # 'unavailable' — never a fabricated wave height.
         if forecast is None or marine is None:
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
 
         try:
-            data = _normalise(forecast, marine, wapi_alerts, gdacs_alerts)
+            data = _normalise(forecast, marine, wapi, gdacs_alerts, forecast_source)
         except Exception as exc:  # noqa: BLE001 - LLD §2.9: never raise on a bad payload shape
             logger.warning("WeatherDataAdapter: normalise failed on %s", exc)
             data = None
@@ -323,11 +270,21 @@ class WeatherDataAdapter(DataSourceAdapter):
     # Per-source fetchers — each returns a plain dict / list, or raises
     # (the raise is caught by _safe and turned into None).
     # ------------------------------------------------------------------ #
+    def _open_meteo_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Add `apikey` when one is configured. Open-Meteo reads the key from
+        this query parameter (not a header), and it is only meaningful against
+        a `customer-` host — so setting the key without also pointing
+        WEATHER_FORECAST_BASE_URL / MARINE_API_BASE_URL at those hosts is a
+        misconfiguration we warn about rather than silently ignore."""
+        if not self._open_meteo_key:
+            return params
+        return {**params, "apikey": self._open_meteo_key}
+
     def _fetch_forecast(self, lat: float, lon: float) -> dict[str, Any]:
         r = _get(
             "open-meteo/forecast",
             f"{self._forecast_base}/forecast",
-            params={
+            params=self._open_meteo_params({
                 "latitude": lat,
                 "longitude": lon,
                 "current": (
@@ -336,7 +293,7 @@ class WeatherDataAdapter(DataSourceAdapter):
                 ),
                 "timeformat": "unixtime",
                 "wind_speed_unit": "kmh",
-            },
+            }),
         )
         return r.json()
 
@@ -344,18 +301,24 @@ class WeatherDataAdapter(DataSourceAdapter):
         r = _get(
             "open-meteo/marine",
             f"{self._marine_base}/marine",
-            params={
+            params=self._open_meteo_params({
                 "latitude": lat,
                 "longitude": lon,
                 "current": "wave_height,wave_direction,wave_period",
                 "timeformat": "unixtime",
-            },
+            }),
         )
         return r.json()
 
-    def _fetch_weatherapi_alerts(self, lat: float, lon: float) -> list[dict[str, Any]] | None:
-        """Returns the raw alert objects, [] if none active, or None if we
-        could not check (no key configured / request failed)."""
+    def _fetch_weatherapi(self, lat: float, lon: float) -> dict[str, Any] | None:
+        """Returns the WHOLE forecast.json payload, or None if we could not
+        check (no key configured / request failed).
+
+        #116 changed this from returning just the alert list. The same response
+        carries a `current` block that we were parsing past and discarding —
+        and that block is the standby for Open-Meteo's rate-limited forecast
+        leg (see _forecast_from_weatherapi). Keeping the payload whole is what
+        makes the fallback free."""
         if not self._weatherapi_key:
             return None
         r = _get(
@@ -369,7 +332,8 @@ class WeatherDataAdapter(DataSourceAdapter):
                 "aqi": "no",
             },
         )
-        return r.json().get("alerts", {}).get("alert", []) or []
+        payload = r.json()
+        return payload if isinstance(payload, dict) else None
 
     def _fetch_gdacs_tc(self, lat: float, lon: float) -> list[dict[str, Any]]:
         """GDACS GeoRSS -> the active tropical cyclones within
@@ -444,6 +408,49 @@ def _parse_gdacs_tc(rss_text: str, lat: float, lon: float) -> list[dict[str, Any
     return out
 
 
+def _wapi_alerts(payload: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """The alert objects out of a WeatherAPI forecast.json payload: [] when
+    none are active, None when we never got to look."""
+    if payload is None:
+        return None
+    return payload.get("alerts", {}).get("alert", []) or []
+
+
+def _forecast_from_weatherapi(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """WeatherAPI's `current` block, re-shaped into the Open-Meteo forecast
+    shape so _normalise stays a single code path (#116).
+
+    Returns None if there is no usable payload — no wind speed means no
+    standby, and the caller degrades to 'unavailable' exactly as before.
+
+    `weather_code` is deliberately NOT mapped. WeatherAPI's condition codes are
+    its own scheme, not the WMO codes Open-Meteo returns, so passing one
+    through under that key would be a number that silently means something
+    else — the fabricated-data failure mode NFR-REL-1 exists to prevent.
+    Nothing consumes weather_code today; when something does, it must be told
+    which scheme it is reading."""
+    if payload is None:
+        return None
+    cur = payload.get("current")
+    if not isinstance(cur, dict):
+        return None
+    wind = _as_float(cur.get("wind_kph"))
+    if wind is None:
+        return None
+    vis_km = _as_float(cur.get("vis_km"))
+    return {
+        "current": {
+            "wind_speed_10m": wind,
+            "wind_gusts_10m": _as_float(cur.get("gust_kph")),
+            "wind_direction_10m": _as_float(cur.get("wind_degree")),
+            "precipitation": _as_float(cur.get("precip_mm")),
+            "visibility": None if vis_km is None else vis_km * 1000.0,
+            "weather_code": None,  # see the docstring — not a WMO code
+            "time": cur.get("last_updated_epoch"),
+        }
+    }
+
+
 def _alert_strings(
     wapi_alerts: list[dict[str, Any]] | None,
     gdacs_alerts: list[dict[str, Any]] | None,
@@ -467,14 +474,16 @@ def _alert_strings(
 def _normalise(
     forecast: dict[str, Any],
     marine: dict[str, Any],
-    wapi_alerts: list[dict[str, Any]] | None,
+    wapi: dict[str, Any] | None,
     gdacs_alerts: list[dict[str, Any]] | None,
+    forecast_source: str = "open-meteo",
 ) -> dict[str, Any] | None:
     """Merge the raw provider payloads into one flat dict for WeatherAgent.
     Returns None if the two mandatory fields (wind speed, wave height) are
     absent — the agent maps that to status='unavailable'."""
     fcur = forecast.get("current") or {}
     mcur = marine.get("current") or {}
+    wapi_alerts = _wapi_alerts(wapi)
 
     wind = _as_float(fcur.get("wind_speed_10m"))
     wave = _as_float(mcur.get("wave_height"))
@@ -501,6 +510,10 @@ def _normalise(
         # FR-WX-2
         "active_alerts": _alert_strings(wapi_alerts, gdacs_alerts),
         "alerts_source_available": alerts_checked,
+        # #116: which provider the wind half came from. Not part of
+        # WeatherResult — it is here so the fallback is visible in logs and
+        # tests rather than being an invisible substitution.
+        "forecast_source": forecast_source,
         "alerts_raw": {"weatherapi": wapi_alerts or [], "gdacs": gdacs_alerts or []},
     }
 

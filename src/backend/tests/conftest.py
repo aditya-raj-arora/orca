@@ -50,3 +50,16 @@ def _clear_geocode_cache():
 
     geocoding_adapter._reset_cache()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_http_cooldowns():
+    """The 429 cooldown registry moved to data_access/http_client.py in #116
+    and is now shared by WeatherDataAdapter and GeocodingAdapter. Clearing it
+    via weather_adapter._reset_rate_limit_state() above would work by
+    accident; clear it explicitly so a geocoding-only test does not inherit a
+    weather test's cooldown (and vice versa)."""
+    from app.data_access import http_client
+
+    http_client.reset_cooldowns()
+    yield

@@ -155,7 +155,7 @@ def test_returns_weatherresult_for_three_locations(loc: LatLon) -> None:
 def test_normalise_from_captured_open_meteo_samples() -> None:
     fc = _json("openmeteo_forecast_kochi.json")
     mar = _json("openmeteo_marine_kochi.json")
-    data = _normalise(fc, mar, wapi_alerts=[], gdacs_alerts=[])
+    data = _normalise(fc, mar, wapi={}, gdacs_alerts=[])
     assert data is not None
     assert data["wind_speed_kmh"] == fc["current"]["wind_speed_10m"]
     assert data["wave_height_m"] == mar["current"]["wave_height"]
@@ -167,16 +167,16 @@ def test_normalise_from_captured_open_meteo_samples() -> None:
 
 def test_normalise_returns_none_when_core_field_missing() -> None:
     fc = _json("openmeteo_forecast_kochi.json")
-    assert _normalise(fc, {"current": {"wave_period": 10.0}}, [], []) is None  # no wave_height
+    assert _normalise(fc, {"current": {"wave_period": 10.0}}, {}, []) is None  # no wave_height
     mar = _json("openmeteo_marine_kochi.json")
-    assert _normalise({"current": {"precipitation": 0.0}}, mar, [], []) is None  # no wind
+    assert _normalise({"current": {"precipitation": 0.0}}, mar, {}, []) is None  # no wind
 
 
 def test_normalise_alerts_source_unavailable_when_both_none() -> None:
     data = _normalise(
         _json("openmeteo_forecast_kochi.json"),
         _json("openmeteo_marine_kochi.json"),
-        wapi_alerts=None,
+        wapi=None,
         gdacs_alerts=None,
     )
     assert data is not None
@@ -187,7 +187,7 @@ def test_normalise_alerts_source_unavailable_when_both_none() -> None:
 def test_normalise_accepts_iso_time_string() -> None:
     fc = {"current": {"wind_speed_10m": 12.0, "time": "2026-09-01T14:45"}}
     mar = {"current": {"wave_height": 1.0, "time": "2026-09-01T14:45"}}
-    data = _normalise(fc, mar, [], [])
+    data = _normalise(fc, mar, {}, [])
     assert data is not None
     assert isinstance(data["data_time_epoch"], int)
 
@@ -249,7 +249,7 @@ def _stub_sources(
 
     monkeypatch.setattr(ad, "_fetch_forecast", _fn(forecast))
     monkeypatch.setattr(ad, "_fetch_marine", _fn(marine))
-    monkeypatch.setattr(ad, "_fetch_weatherapi_alerts", _fn(wapi))
+    monkeypatch.setattr(ad, "_fetch_weatherapi", _fn(wapi))
     monkeypatch.setattr(ad, "_fetch_gdacs_tc", _fn([] if gdacs == () else gdacs))
 
 
@@ -258,7 +258,7 @@ def test_fetch_ok_when_all_sources_stubbed(
 ) -> None:
     fc = _json("openmeteo_forecast_chennai.json")
     _stub_sources(
-        monkeypatch, adapter, forecast=fc, marine=_json("openmeteo_marine_chennai.json"), wapi=[]
+        monkeypatch, adapter, forecast=fc, marine=_json("openmeteo_marine_chennai.json"), wapi={}
     )
     res = adapter.fetch({"lat": 13.08, "lon": 80.27, "window": None})
     assert res.status == "ok"
@@ -271,7 +271,7 @@ def test_fetch_unavailable_when_forecast_raises(
 ) -> None:
     # FR-WX-4 + LLD §2.9: adapter degrades, never raises.
     _stub_sources(
-        monkeypatch, adapter, forecast=_raise, marine=_json("openmeteo_marine_kochi.json"), wapi=[]
+        monkeypatch, adapter, forecast=_raise, marine=_json("openmeteo_marine_kochi.json"), wapi={}
     )
     res = adapter.fetch({"lat": 9.93, "lon": 76.26, "window": None})
     assert res.status == "unavailable"

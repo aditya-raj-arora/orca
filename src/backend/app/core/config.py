@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # older than the numbers a live call would have returned. Set to 0 to
     # disable the cache entirely (every fetch goes upstream).
     weather_cache_ttl_seconds: float = 600.0
+    # Open-Meteo commercial key (#116). Empty = the keyless tier, which is
+    # metered per CLIENT IP — and on Render's free plan that IP is shared with
+    # every other service on the node, so the quota can be exhausted by traffic
+    # that isn't ours and 429s look permanent. A key moves forecast / marine /
+    # geocoding onto the account's own quota, but ONLY on the `customer-`
+    # hosts: setting this WITHOUT also pointing the three base URLs below at
+    # customer-api.open-meteo.com / customer-marine-api.open-meteo.com /
+    # customer-geocoding-api.open-meteo.com leaves the key ignored (the adapter
+    # logs a warning if you do). Costs money — see docs/DEPLOYMENT.md before
+    # setting it.
+    open_meteo_api_key: str = ""
 
     incois_base_url: str = "https://incois.gov.in"
     incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"
