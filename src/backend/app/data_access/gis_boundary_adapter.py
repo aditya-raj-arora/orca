@@ -39,13 +39,26 @@ _CACHE_LOCK = threading.Lock()
 _CACHE: AdapterResult | None = None
 
 
+def _sync_url(async_url: str) -> str:
+    return async_url.replace("postgresql+asyncpg://", "postgresql://")
+
+
 class GISBoundaryAdapter(DataSourceAdapter):
     def __init__(self) -> None:
         self._data_path = Path(get_settings().gis_boundary_data_path)
 
     def fetch(self, params: dict[str, Any]) -> AdapterResult:
-        """Load IMBL + MPA boundary features from the GeoJSON at
-        self._data_path, caching the parsed result in-process.
+        """Return IMBL/MPA boundary features from the GeoJSON at
+        self._data_path, filtered by params["type"] (e.g. "IMBL" or "MPA")
+        if given, else all boundary types.
+
+        Result shape matches what GeofencingAgent expects (LLD §2.5):
+        data={"features": [{"type", "name", "geometry", "source"}, ...]}
+        with "geometry" as a JSON string (agent does json.loads on it).
+
+        The parsed GeoJSON itself is cached in-process (slow-changing
+        reference data, LLD §4.1 entity notes); filtering happens per-call
+        so different `params["type"]` values are served from one cache.
 
         Same error contract as the other adapters (LLD §2.9): return
         status='unavailable' rather than raising if the data can't be loaded,
@@ -53,19 +66,36 @@ class GISBoundaryAdapter(DataSourceAdapter):
         """
         global _CACHE
         with _CACHE_LOCK:
-            if _CACHE is not None:
-                return _CACHE
-            try:
-                result = self._load_from_disk()
-            except Exception as exc:  # noqa: BLE001 - LLD §2.9: degrade, never raise
-                logger.warning(
-                    "GISBoundaryAdapter.fetch: failed to load %s: %s",
-                    self._data_path,
-                    exc,
-                )
-                return AdapterResult(data=None, fetched_at=self._now(), status="unavailable")
-            _CACHE = result
-            return result
+            if _CACHE is None:
+                try:
+                    _CACHE = self._load_from_disk()
+                except Exception as exc:  # noqa: BLE001 - LLD §2.9: degrade, never raise
+                    logger.warning(
+                        "GISBoundaryAdapter.fetch: failed to load %s: %s",
+                        self._data_path,
+                        exc,
+                    )
+                    return AdapterResult(data=None, fetched_at=self._now(), status="unavailable")
+            raw = _CACHE
+
+        if raw.status != "ok" or raw.data is None:
+            return raw
+
+        boundary_type = params.get("type")
+        boundaries = raw.data["boundaries"]
+        if boundary_type is not None:
+            boundaries = [b for b in boundaries if b["type"] == boundary_type]
+
+        features = [
+            {
+                "type": b["type"],
+                "name": b["name"],
+                "geometry": json.dumps(b["geometry"]),
+                "source": b["source"],
+            }
+            for b in boundaries
+        ]
+        return AdapterResult(data={"features": features}, fetched_at=raw.fetched_at, status="ok")
 
     def _load_from_disk(self) -> AdapterResult:
         with self._data_path.open("r", encoding="utf-8") as f:

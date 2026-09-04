@@ -27,6 +27,11 @@ shapely>=2.1.2
 sqlalchemy[asyncio]>=2.0.52
 asyncpg>=0.29
 geoalchemy2>=0.15
+# Sync driver, separate from asyncpg above — GISBoundaryAdapter and
+# app/db/load_boundaries.py connect directly via psycopg rather than through
+# SQLAlchemy's async engine, since both are simple one-off/sync-safe queries
+# (LLD §2.9 adapter contract doesn't require async here).
+psycopg[binary]>=3.1
 
 # Dev / CI tooling
 ruff>=0.6
