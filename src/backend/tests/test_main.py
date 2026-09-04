@@ -164,3 +164,67 @@ def test_websocket_malformed_message_sends_error(monkeypatch):
         ws.send_text("not json")
         msg = ws.receive_json()
         assert msg["type"] == "error"
+
+
+# --------------------------------------------------------------------------- #
+# #121: a verdict must never be shown without an explanation behind it
+# --------------------------------------------------------------------------- #
+def _risk(verdict: str):
+    from app.schemas.risk import RiskVerdict
+
+    return RiskVerdict(verdict=verdict, rationale="stub", contributing_factors=[])
+
+
+def test_failed_synthesis_does_not_ship_an_unexplained_safe_verdict():
+    """The deployed UI rendered a green SAFE badge above "Sorry, I couldn't put
+    together an answer" for a Kochi->Colombo route query. A verdict with no
+    supporting reasoning is exactly what FR-SYN-2 and SynthesisAgent's
+    refuse-to-ship checks exist to prevent, and the Gateway was undoing them."""
+    from app.main import _final_response
+    from app.orchestration.graph import _unavailable_composed_response
+
+    state = {
+        "results": {"risk_safety": _risk("SAFE")},
+        "composed": _unavailable_composed_response(),
+        "synthesis_ok": False,
+    }
+    assert _final_response(state, "en", None).verdict == "INSUFFICIENT_DATA"
+
+
+def test_successful_synthesis_still_reports_the_real_verdict():
+    from app.main import _final_response
+    from app.schemas.synthesis import ComposedResponse
+
+    state = {
+        "results": {"risk_safety": _risk("SAFE")},
+        "composed": ComposedResponse(text="Conditions are calm."),
+        "synthesis_ok": True,
+    }
+    assert _final_response(state, "en", None).verdict == "SAFE"
+
+
+def test_absent_flag_defaults_to_trusting_the_verdict():
+    """Back-compat for any state dict that predates the flag (and for the
+    clarification path, which sets it True explicitly)."""
+    from app.main import _final_response
+    from app.schemas.synthesis import ComposedResponse
+
+    state = {
+        "results": {"risk_safety": _risk("CAUTION")},
+        "composed": ComposedResponse(text="Be careful."),
+    }
+    assert _final_response(state, "en", None).verdict == "CAUTION"
+
+
+def test_unsafe_verdict_is_also_withheld_when_unexplained():
+    """Not just the reassuring ones: an UNSAFE verdict the system cannot
+    justify is still a claim it should not make."""
+    from app.main import _final_response
+    from app.orchestration.graph import _unavailable_composed_response
+
+    state = {
+        "results": {"risk_safety": _risk("UNSAFE")},
+        "composed": _unavailable_composed_response(),
+        "synthesis_ok": False,
+    }
+    assert _final_response(state, "en", None).verdict == "INSUFFICIENT_DATA"

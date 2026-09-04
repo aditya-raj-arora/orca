@@ -86,6 +86,12 @@ class GraphState(TypedDict, total=False):
     plan: ExecutionPlan
     results: Annotated[dict[str, Any], _merge_dicts]
     composed: ComposedResponse
+    # False when Synthesis degraded to the _unavailable_composed_response()
+    # sentinel (#121). The Gateway must not render a verdict badge for a
+    # response it could not explain — see main._final_response(). Internal to
+    # the graph, deliberately not on the ComposedResponse contract, so this
+    # needs no contract-change broadcast (CONTRIBUTING.md §6).
+    synthesis_ok: bool
     # Human-readable step log for FR-PLAN-4 / FR-UI-3 (the WebSocket
     # trace_update stream, LLD §5.2, is built by replaying this list).
     trace: Annotated[list[str], operator.add]
@@ -253,18 +259,29 @@ def _synthesis_node(agent: SynthesisAgent):
             # No agents ran, nothing to synthesize from — the clarification
             # prompt IS the response; skip the LLM call entirely (LLD §2.2).
             composed = ComposedResponse(text=plan.clarification_prompt or "")
-            return {"composed": composed, "trace": ["Synthesis: skipped (clarification requested)"]}
+            # A clarifying question IS a successful response — the LLM was
+            # skipped deliberately, nothing failed.
+            return {
+                "composed": composed,
+                "synthesis_ok": True,
+                "trace": ["Synthesis: skipped (clarification requested)"],
+            }
 
+        sentinel = _unavailable_composed_response()
         composed, trace_line = await _call_bounded(
             agent.compose,
             plan,
             state.get("results", {}),
             state.get("language", "en"),
-            unavailable=_unavailable_composed_response(),
+            unavailable=sentinel,
             agent_label="Synthesis Agent",
             timeout=SYNTHESIS_TIMEOUT_SECONDS,
         )
-        return {"composed": composed, "trace": [trace_line]}
+        return {
+            "composed": composed,
+            "synthesis_ok": composed is not sentinel,
+            "trace": [trace_line],
+        }
 
     return _node
 
