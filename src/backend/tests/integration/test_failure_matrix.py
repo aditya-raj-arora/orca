@@ -202,21 +202,17 @@ async def test_incois_down_with_no_snapshot_yields_no_pfz_at_all(
     assert state["composed"].text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Issue #99 (defect 2): GeofenceResult has no unavailable signal, so an "
-        "adapter failure is indistinguishable from a genuine 'clear' result and "
-        "Figure 2 returns SAFE. Remove this marker with the fix — strict=True so "
-        "it fails loudly the moment #99 lands rather than silently passing."
-    ),
-)
 async def test_gis_adapter_down_yields_insufficient_data_never_safe(
     fault_http, settings_override, tmp_path
 ):
     """Geofencing is a required input (Figure 2 step 2). With the boundary
     dataset unreadable, the honest answer is INSUFFICIENT_DATA — a geofence
-    that cannot be checked is not a geofence that was cleared."""
+    that cannot be checked is not a geofence that was cleared.
+
+    Landed xfail(strict=True) in #100 because GeofenceResult had no way to say
+    "unavailable", so Figure 2 could not tell a missing boundary check from a
+    passed one and answered SAFE. Unmarked here with the #99 fix that gives
+    GeofencingAgent.check() a None sentinel."""
     fault_http()
     settings_override(gis_boundary_data_path=str(tmp_path / "does-not-exist.geojson"))
     llm = ScriptedLLM(
