@@ -13,7 +13,7 @@ const mockTraces: TraceStep[] = [
 
 export default function TraceViewer() {
   return (
-    <aside aria-label="Agent trace" style={{ padding: '1rem', background: 'var(--color-surface)', color: 'var(--color-text)', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
+    <aside aria-label="Agent trace" tabIndex={0} aria-live="polite" style={{ padding: '1rem', background: 'var(--color-surface)', color: 'var(--color-text)', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
       <h3 style={{ marginTop: 0 }}>Agent Trace</h3>
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {mockTraces.map((trace) => (

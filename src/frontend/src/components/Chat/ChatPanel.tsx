@@ -207,7 +207,7 @@ export default function ChatPanel() {
         </button>
       </div>
 
-      <div className="chat-history" ref={chatHistoryRef}>
+      <div className="chat-history" ref={chatHistoryRef} tabIndex={0} aria-label="Chat history messages" aria-live="polite">
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.sender}`}>
             {m.sender === "system" ? (
