@@ -292,3 +292,145 @@ def test_unparseable_retry_after_falls_back_to_the_default_cooldown(
     ).install(monkeypatch)
     wx.fetch(CHENNAI)
     assert 0 < wa._cooldown_remaining_s("open-meteo/forecast") <= wa._DEFAULT_COOLDOWN_S
+
+
+# --------------------------------------------------------------------------- #
+# 4. Provider fallback (#116)
+#
+# Open-Meteo's forecast leg 429s PERSISTENTLY from Render's shared egress IP,
+# so retry and cache (above) cannot help. The WeatherAPI payload already
+# fetched for alerts carries the same current-conditions fields.
+# --------------------------------------------------------------------------- #
+_WAPI_CURRENT = {
+    "current": {
+        "wind_kph": 21.6,
+        "gust_kph": 25.6,
+        "wind_degree": 143,
+        "precip_mm": 0.0,
+        "vis_km": 10.0,
+        "condition": {"text": "Overcast", "code": 1009},
+        "last_updated_epoch": 1788258600,
+    },
+    "alerts": {"alert": []},
+}
+
+
+def _wapi_healthy(**overrides) -> Router:
+    r = _healthy(**{"api.weatherapi.com": _json(_WAPI_CURRENT)})
+    r.behaviours.update(overrides)
+    return r
+
+
+def test_forecast_429_falls_back_to_weatherapi_current(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _wapi_healthy(**{"/forecast": _429()}).install(monkeypatch)
+
+    res = wx.fetch(CHENNAI)
+
+    assert res.status == "ok"  # was 'unavailable' — the whole point
+    assert res.data["wind_speed_kmh"] == 21.6
+    assert res.data["wind_gust_kmh"] == 25.6
+    assert res.data["wind_direction_deg"] == 143.0
+    assert res.data["visibility_m"] == 10_000.0  # vis_km -> m
+    assert res.data["data_time_epoch"] == 1788258600
+    assert res.data["forecast_source"] == "weatherapi"
+    # Wave height still comes from Open-Meteo marine, which was never blocked.
+    assert res.data["wave_height_m"] == 1.1
+
+
+def test_fallback_does_not_fabricate_a_wmo_weather_code(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WeatherAPI condition codes are not WMO codes; emitting 1009 as one would
+    # be a number that silently means something else (NFR-REL-1).
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _wapi_healthy(**{"/forecast": _429()}).install(monkeypatch)
+    assert wx.fetch(CHENNAI).data["weather_code"] is None
+
+
+def test_open_meteo_is_preferred_when_it_works(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _wapi_healthy().install(monkeypatch)
+    res = wx.fetch(CHENNAI)
+    assert res.data["forecast_source"] == "open-meteo"
+    assert res.data["wind_speed_kmh"] == 12.0  # not WeatherAPI's 21.6
+
+
+def test_no_weatherapi_key_means_no_fallback_still_unavailable(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The deployed state before the key is set: fallback inert, old behaviour.
+    monkeypatch.setattr(wx, "_weatherapi_key", "")
+    _wapi_healthy(**{"/forecast": _429()}).install(monkeypatch)
+    assert wx.fetch(CHENNAI).status == "unavailable"
+
+
+def test_marine_failure_is_still_unavailable_even_with_the_fallback(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # FR-WX-4 unchanged: wave height has no fallback provider.
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _wapi_healthy(**{"/forecast": _429(), "/marine": _429()}).install(monkeypatch)
+    assert wx.fetch(CHENNAI).status == "unavailable"
+
+
+def test_fallback_still_reports_alerts_from_the_same_payload(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "current": _WAPI_CURRENT["current"],
+        "alerts": {"alert": [{"headline": "Cyclone warning", "severity": "Severe"}]},
+    }
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _healthy(**{"api.weatherapi.com": _json(payload), "/forecast": _429()}).install(monkeypatch)
+
+    res = wx.fetch(CHENNAI)
+    assert res.data["forecast_source"] == "weatherapi"
+    assert res.data["active_alerts"] == ["Cyclone warning (Severe)"]
+    assert res.data["alerts_source_available"] is True
+
+
+def test_fallback_needs_a_wind_speed_to_be_usable(
+    wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wx, "_weatherapi_key", "test-key")
+    _healthy(
+        **{"api.weatherapi.com": _json({"current": {"vis_km": 10.0}}), "/forecast": _429()}
+    ).install(monkeypatch)
+    assert wx.fetch(CHENNAI).status == "unavailable"
+
+
+def test_fallback_maps_the_real_captured_weatherapi_payload() -> None:
+    """Against the committed sample capture, not a hand-written stub — so a
+    provider field rename is caught here rather than on stage."""
+    import json
+    from pathlib import Path
+
+    from app.data_access.weather_adapter import _forecast_from_weatherapi
+
+    sample = (
+        Path(__file__).resolve().parents[3]
+        / "docs" / "samples" / "weather" / "weatherapi_alerts_chennai.json"
+    )
+    payload = json.loads(sample.read_text(encoding="utf-8"))
+    out = _forecast_from_weatherapi(payload)
+
+    assert out is not None
+    cur = out["current"]
+    assert cur["wind_speed_10m"] == payload["current"]["wind_kph"]
+    assert cur["visibility"] == payload["current"]["vis_km"] * 1000.0
+    assert cur["time"] == payload["current"]["last_updated_epoch"]
+
+
+def test_alerts_helper_preserves_none_versus_empty() -> None:
+    # NFR-REL-2: None means "couldn't check", [] means "checked, none active".
+    from app.data_access.weather_adapter import _wapi_alerts
+
+    assert _wapi_alerts(None) is None
+    assert _wapi_alerts({}) == []
+    assert _wapi_alerts({"alerts": {"alert": []}}) == []
+    assert _wapi_alerts({"alerts": {"alert": [{"headline": "x"}]}}) == [{"headline": "x"}]

@@ -247,9 +247,17 @@ def _stub_sources(
     def _fn(val: object):
         return (lambda _la, _lo: _raise()) if val is _raise else (lambda _la, _lo: val)
 
+    def _wapi_payload(val: object):
+        """_fetch_weatherapi returns the whole forecast.json payload (#116), but
+        these tests care about the alerts leg, so a list is wrapped into the
+        payload shape here. None still means "couldn't check at all"."""
+        if val is _raise or val is None:
+            return val
+        return {"alerts": {"alert": val}}
+
     monkeypatch.setattr(ad, "_fetch_forecast", _fn(forecast))
     monkeypatch.setattr(ad, "_fetch_marine", _fn(marine))
-    monkeypatch.setattr(ad, "_fetch_weatherapi_alerts", _fn(wapi))
+    monkeypatch.setattr(ad, "_fetch_weatherapi", _fn(_wapi_payload(wapi)))
     monkeypatch.setattr(ad, "_fetch_gdacs_tc", _fn([] if gdacs == () else gdacs))
 
 
