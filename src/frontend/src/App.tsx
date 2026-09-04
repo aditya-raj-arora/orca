@@ -1,37 +1,39 @@
+/**
+ * Top-level layout: chat panel + map panel + agent-trace panel.
+ *
+ * Owners: P5 (Chat, split left) + P6 (Map/Trace, split right) — split layout
+ * ownership matches CODEOWNERS. Coordinate on the shared shell below rather
+ * than each rewriting App.tsx independently.
+ *
+ * Reference: HLD v1.0 §3 "Web Client", FR-UI-1 to FR-UI-4.
+ */
 import { useState, useEffect } from "react";
 import ChatPanel from "./components/Chat/ChatPanel";
-import MapPanel, { MarkerData, ZoneData } from "./components/Map/MapPanel";
+import MapPanel from "./components/Map/MapPanel";
+import type { MarkerData, ZoneData } from "./components/Map/MapPanel";
 import TraceViewer from "./components/TraceViewer/TraceViewer";
+import { MAP_UPDATE_EVENT, normalizeMapPayload } from "./api/mapPayload";
 
 export default function App() {
   const [markers, setMarkers] = useState<MarkerData[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
 
+  // ChatPanel owns the single wsClient connection (LLD §5.2 — one query per
+  // connection, session-scoped) and re-broadcasts each final_response's
+  // map_payload as a window event, mirroring its existing trace_update
+  // dispatch. Listening here keeps the map on live results without opening a
+  // second socket against the same backend.
   useEffect(() => {
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsHost = window.location.hostname || "localhost";
-    const wsPort = "8000";
-    const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws`;
-
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.markers) {
-          setMarkers(data.markers);
-        }
-        if (data.zones) {
-          setZones(data.zones);
-        }
-      } catch (err) {
-        console.error("Failed to parse WebSocket message", err);
-      }
+    const handleMapUpdate = (event: Event) => {
+      const { markers: nextMarkers, zones: nextZones } = normalizeMapPayload(
+        (event as CustomEvent<unknown>).detail
+      );
+      setMarkers(nextMarkers);
+      setZones(nextZones);
     };
 
-    return () => {
-      ws.close();
-    };
+    window.addEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
+    return () => window.removeEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
   }, []);
 
   return (
