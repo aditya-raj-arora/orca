@@ -247,3 +247,19 @@ async def test_no_intent_query_skips_risk_and_all_specialists():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_unavailable_weather_sentinel_does_not_claim_alerts_were_checked():
+    """NFR-REL-2 (#110): the graph's own 'weather unavailable' sentinel must
+    set alerts_source_available=False, matching WeatherAgent._unavailable().
+    It defaults to True, which would assert both alert feeds were reached and
+    found clear while the result carries wind=0.0/wave=0.0 — an empty
+    active_alerts list read as 'no alerts' rather than 'unknown'. Currently
+    masked because RiskSafetyAgent checks status first; this pins it so a
+    reordering there can't quietly turn it into a SAFE-leaning verdict."""
+    from app.orchestration.graph import _unavailable_weather_result
+
+    sentinel = _unavailable_weather_result()
+    assert sentinel.status == "unavailable"
+    assert sentinel.alerts_source_available is False
+    assert sentinel.active_alerts == []

@@ -330,7 +330,18 @@ def _resolve_time_window(text: str | None, now: datetime | None = None) -> TimeW
 def _unavailable_weather_result() -> Any:
     from app.schemas.weather import WeatherResult
 
-    return WeatherResult(wind_speed_kmh=0.0, wave_height_m=0.0, status="unavailable")
+    # alerts_source_available MUST be False here (#110). It defaults to True,
+    # which would claim both alert feeds were reached and found clear while
+    # this result carries wind=0.0/wave=0.0 — exactly the "empty list read as
+    # 'no alerts' rather than 'unknown'" trap WeatherResult's own docstring
+    # warns about (NFR-REL-2). WeatherAgent._unavailable() sets it False for
+    # the same reason; this sentinel must not disagree with it.
+    return WeatherResult(
+        wind_speed_kmh=0.0,
+        wave_height_m=0.0,
+        status="unavailable",
+        alerts_source_available=False,
+    )
 
 
 def _unavailable_ocean_params() -> Any:

@@ -19,10 +19,14 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
 from app.core.session import ConversationContext
 from app.schemas.synthesis import AgentInvocationRequest, ExecutionPlan
+
+if TYPE_CHECKING:  # type-only: keeps this module importable without data_access
+    from app.data_access.base import DataSourceAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +108,16 @@ class QueryEntities:
 
 
 class PlannerAgent:
-    def __init__(self, llm_client: object | None = None) -> None:
-        # Lazily constructed if not injected, so unit tests (and route_query()
-        # callers that don't need extraction) never need a real API key.
+    def __init__(
+        self,
+        llm_client: object | None = None,
+        geocoder: DataSourceAdapter | None = None,
+    ) -> None:
+        # Both lazily constructed if not injected, so unit tests (and
+        # route_query() callers that don't need extraction) never need a real
+        # API key or a live geocoding call.
         self._llm_client = llm_client
+        self._geocoder: DataSourceAdapter | None = geocoder
 
     # ------------------------------------------------------------------ #
     # Public entry point
@@ -140,10 +150,21 @@ class PlannerAgent:
             context.append_turn(query.text, {"location": None})
             return plan
 
-        location = entities.as_location_dict()
+        location = _usable_location(entities.as_location_dict())
+        if location is None and entities.place_name:
+            # Figure 1's "Location resolvable?" needs coordinates, not a name.
+            # The extraction LLM is only asked for lat/lon "if you know it", so
+            # a named place with null coordinates is common — geocode it rather
+            # than letting it through as resolved (#110).
+            location = self._geocode(entities.place_name, trace)
+
         if location is None:
             trace.append("Planner: no location in query — checking prior conversation turns")
-            location = context.last_known_location()
+            # Guarded the same way: a turn recorded before this fix (or by any
+            # other writer) could hold a coordinate-less location, and reusing
+            # one would silently disable every specialist agent for the rest of
+            # the session (FR-PLAN-5).
+            location = _usable_location(context.last_known_location())
 
         if location is None:
             trace.append(
@@ -220,6 +241,46 @@ class PlannerAgent:
             intent_keywords=list(data.get("intent_keywords", [])),
         )
 
+    # ------------------------------------------------------------------ #
+    # Location resolution (#110)
+    # ------------------------------------------------------------------ #
+    def _geocode(self, place_name: str, trace: list[str]) -> dict | None:
+        """place_name -> a location dict with real coordinates, or None.
+
+        None is a first-class outcome, not an error path: the caller then runs
+        Figure 1's clarifying question. Never raises — GeocodingAdapter.fetch()
+        already honours the LLD §2.9 contract, and the broad guard below covers
+        construction failing too (e.g. no network in a unit-test environment),
+        because a geocoder problem must degrade the query, not crash it."""
+        try:
+            geocoder = self._geocoder or self._build_geocoder()
+            self._geocoder = geocoder
+            result = geocoder.fetch({"place_name": place_name})
+        except Exception as exc:  # noqa: BLE001 - degrade, don't crash the query
+            logger.warning("Planner: geocoding %r failed: %s", place_name, exc)
+            trace.append(f"Planner: geocoding {place_name!r} failed — location unresolved")
+            return None
+
+        location = _usable_location(result.data) if result.status == "ok" else None
+        if location is None:
+            trace.append(
+                f"Planner: {place_name!r} could not be resolved to coordinates "
+                "(Fig.1 'Location resolvable?' = No)"
+            )
+            return None
+        trace.append(
+            f"Planner: geocoded {place_name!r} -> "
+            f"({location['lat']}, {location['lon']}) {location.get('country_code') or ''}".rstrip()
+        )
+        return location
+
+    def _build_geocoder(self) -> DataSourceAdapter:
+        # Imported lazily so this module stays importable (and route_query()
+        # unit-testable) without the data_access layer being constructible.
+        from app.data_access.geocoding_adapter import GeocodingAdapter
+
+        return GeocodingAdapter()
+
     def _build_llm_client(self):
         # Imported lazily so importing this module never requires google-genai
         # to be installed (e.g. when only running route_query() unit tests).
@@ -279,6 +340,26 @@ class PlannerAgent:
 # returns the ExecutionPlan. Kept as a free function (not a method) so it's
 # trivially unit-testable without constructing a PlannerAgent at all.
 # ---------------------------------------------------------------------- #
+
+
+def _usable_location(location: dict | None) -> dict | None:
+    """A location is only usable if it carries numeric coordinates (#110).
+
+    The specialist agents need LatLon (LLD §2.3-2.5); graph._location_for()
+    returns None without both, and every agent then reports 'unavailable'
+    WITHOUT calling its adapter. So a name-only dict must never be treated as
+    resolved — it looks like a working plan and produces INSUFFICIENT_DATA for
+    every query in the session."""
+    if not location:
+        return None
+    lat, lon = location.get("lat"), location.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    if isinstance(lat, bool) or isinstance(lon, bool):  # bool is an int subclass
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return location
 
 
 def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> ExecutionPlan:

@@ -157,3 +157,163 @@ def test_llm_down_routes_normally_when_the_session_already_has_a_location():
 
     assert not plan.needs_clarification
     assert _agent_names(plan) == ["weather", "ocean", "risk_safety"]
+
+
+# --------------------------------------------------------------------------- #
+# Location must carry coordinates, not just a name (#110)
+#
+# Regression guard for the bug where the LLM returned a place NAME with null
+# lat/lon, `as_location_dict()` returned a truthy dict, plan()'s `is None`
+# gate let it through, and every specialist agent then reported 'unavailable'
+# WITHOUT calling its adapter — for every query in the session.
+# --------------------------------------------------------------------------- #
+class _StubGeocoder:
+    """Stands in for GeocodingAdapter. `location` None means "cannot resolve"."""
+
+    def __init__(self, location=None):
+        self._location = location
+        self.calls: list[str] = []
+
+    def fetch(self, params):
+        from datetime import UTC, datetime
+
+        from app.data_access.base import AdapterResult
+
+        self.calls.append(params.get("place_name"))
+        status = "ok" if self._location else "unavailable"
+        return AdapterResult(
+            data=dict(self._location) if self._location else None,
+            fetched_at=datetime.now(UTC),
+            status=status,
+        )
+
+
+def _name_only_llm(place_name="Kochi"):
+    """An LLM that names a place but returns null coordinates — the shape the
+    extraction prompt invites, since it asks for lat/lon only 'if you know it'."""
+
+    class _LLM:
+        class models:  # noqa: N801 - mirrors google-genai's client.models
+            @staticmethod
+            def generate_content(**_kwargs):
+                class _R:
+                    text = (
+                        f'{{"location_resolvable":true,"place_name":"{place_name}",'
+                        '"lat":null,"lon":null,"time_window_text":null,'
+                        '"intent_safety":true,"intent_fishing":false,'
+                        '"intent_boundary":false,"intent_keywords":["safe"],'
+                        '"confidence":0.9}'
+                    )
+
+                return _R()
+
+    return _LLM()
+
+
+def test_usable_location_rejects_anything_without_real_coordinates():
+    from app.orchestration.planner_agent import _usable_location
+
+    assert _usable_location(LOCATION) == LOCATION
+    assert _usable_location({"place_name": "Kochi", "lat": None, "lon": None}) is None
+    assert _usable_location({"place_name": "Kochi", "lat": 9.93}) is None
+    assert _usable_location({"lat": "9.93", "lon": "76.26"}) is None  # strings, not numbers
+    assert _usable_location({"lat": True, "lon": False}) is None      # bool is an int subclass
+    assert _usable_location({"lat": 91.0, "lon": 76.26}) is None      # out of range
+    assert _usable_location({"lat": 9.93, "lon": 181.0}) is None
+    assert _usable_location(None) is None
+    assert _usable_location({}) is None
+
+
+def test_place_name_without_coordinates_is_geocoded_then_routed():
+    geocoder = _StubGeocoder(LOCATION)
+    plan = PlannerAgent(llm_client=_name_only_llm(), geocoder=geocoder).plan(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en"),
+        ConversationContext(session_id="geocode-ok"),
+    )
+
+    assert geocoder.calls == ["Kochi"]
+    assert not plan.needs_clarification
+    assert _agent_names(plan) == ["weather", "risk_safety"]
+    # The coordinates the specialist agents actually need must be on the payload.
+    payload_location = plan.invocations[0].input_payload["location"]
+    assert (payload_location["lat"], payload_location["lon"]) == (9.93, 76.26)
+
+
+def test_unresolvable_place_name_asks_the_clarifying_question():
+    """Figure 1's 'Location resolvable? = No' branch must fire when we cannot
+    get coordinates — previously it could not, because a name-only dict is
+    truthy, so the user was never asked for a usable location."""
+    plan = PlannerAgent(llm_client=_name_only_llm("Atlantis"), geocoder=_StubGeocoder(None)).plan(
+        NormalizedQuery(text="is it safe to fish near Atlantis", language="en"),
+        ConversationContext(session_id="geocode-fail"),
+    )
+
+    assert plan.needs_clarification
+    assert plan.invocations == []
+
+
+def test_a_coordinateless_location_is_never_stored_in_context():
+    """The session-poisoning half of the bug: once a name-only location was
+    recorded, last_known_location() returned it for every follow-up (truthy),
+    so FR-PLAN-5 turns failed identically for the rest of the session."""
+    context = ConversationContext(session_id="no-poison")
+    PlannerAgent(llm_client=_name_only_llm(), geocoder=_StubGeocoder(None)).plan(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en"), context
+    )
+    assert context.last_known_location() is None
+
+
+def test_a_coordinateless_context_location_is_ignored_not_reused():
+    """Defence in depth for sessions/turns written by anything else: a stored
+    location without coordinates must not satisfy Figure 1."""
+    context = ConversationContext(session_id="legacy-poisoned")
+    context.append_turn("", {"location": {"place_name": "Kochi", "lat": None, "lon": None}})
+
+    plan = _planner_with_llm_down().plan(
+        NormalizedQuery(text="is it safe to fish there", language="en"), context
+    )
+
+    assert plan.needs_clarification
+    assert plan.invocations == []
+
+
+def test_geocoder_failure_degrades_to_clarification_and_never_raises():
+    class _ExplodingGeocoder:
+        def fetch(self, params):
+            raise RuntimeError("stub: geocoder exploded")
+
+    plan = PlannerAgent(llm_client=_name_only_llm(), geocoder=_ExplodingGeocoder()).plan(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en"),
+        ConversationContext(session_id="geocode-boom"),
+    )
+
+    assert plan.needs_clarification
+    assert plan.invocations == []
+
+
+def test_coordinates_from_the_llm_skip_the_geocoder():
+    """No wasted call (and no quota spend) when extraction already gave us
+    usable coordinates."""
+    geocoder = _StubGeocoder(LOCATION)
+
+    class _LLM:
+        class models:  # noqa: N801
+            @staticmethod
+            def generate_content(**_kwargs):
+                class _R:
+                    text = (
+                        '{"location_resolvable":true,"place_name":"Kochi","lat":9.93,'
+                        '"lon":76.26,"time_window_text":null,"intent_safety":true,'
+                        '"intent_fishing":false,"intent_boundary":false,'
+                        '"intent_keywords":["safe"],"confidence":0.9}'
+                    )
+
+                return _R()
+
+    plan = PlannerAgent(llm_client=_LLM(), geocoder=geocoder).plan(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en"),
+        ConversationContext(session_id="already-resolved"),
+    )
+
+    assert geocoder.calls == []
+    assert not plan.needs_clarification

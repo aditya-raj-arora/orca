@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     weatherapi_base_url: str = "https://api.weatherapi.com/v1"
     weatherapi_key: str = ""
     gdacs_base_url: str = "https://www.gdacs.org/xml"
+    # Place name -> coordinates for the Planner (#110). Keyless, same provider
+    # as forecast/marine. geocoding_country_code constrains the search: without
+    # it "Kochi" resolves to Kochi, JAPAN rather than Kochi, India — see
+    # data_access/geocoding_adapter.py's module docstring before changing it.
+    # "" searches globally.
+    geocoding_base_url: str = "https://geocoding-api.open-meteo.com/v1"
+    geocoding_country_code: str = "IN"
     # Rate-limit protection for the keyless Open-Meteo tier (#106). Repeat
     # queries about the same ~5 km cell inside this window are served from
     # WeatherDataAdapter's in-process cache instead of spending quota. 10 min
