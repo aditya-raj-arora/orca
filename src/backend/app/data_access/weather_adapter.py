@@ -18,11 +18,28 @@ no partial / fabricated data (FR-WX-4). The two alert sources are best-effort:
 if both fail, the result is still 'ok' but data['alerts_source_available'] is
 False so the agent / Synthesis can say "alert data unavailable" rather than
 imply "no alerts" (NFR-REL-1).
+
+Rate limiting (#106): Open-Meteo's keyless tier is quota'd per minute / hour /
+day and answers a burst with 429. Three things keep us inside it, in order of
+how much they actually buy:
+
+  1. A short-TTL result cache keyed on a coarse lat/lon grid, so N queries
+     about the same harbour inside the TTL cost one upstream call.
+  2. A deadline-bounded retry on 429/5xx that honours Retry-After — rides out
+     a per-minute bucket without ever exceeding AGENT_TIMEOUT_SECONDS.
+  3. A per-source cooldown after a 429, so an hour/day quota stops us calling
+     at all instead of us adding load to an API that is already refusing.
+
+None of these ever soften the FR-WX-4 contract: a cache hit is real data with
+its real observation timestamp, and everything else still degrades to
+'unavailable' rather than to a fabricated number.
 """
 from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -35,10 +52,51 @@ from app.data_access.base import AdapterResult, DataSourceAdapter
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT_S = 4.0          # per call; 4 calls run in parallel, so well
+_HTTP_TIMEOUT_S = 4.0          # per attempt; 4 sources run in parallel, so well
                               # inside the graph's 6s AGENT_TIMEOUT_SECONDS.
+_SOURCE_BUDGET_S = 5.0        # total wall clock for one source INCLUDING its
+                              # retries. Every retry is bounded by this
+                              # deadline, so hardening the adapter against 429
+                              # can never push a node past AGENT_TIMEOUT_SECONDS
+                              # (orchestration/graph.py) — a source that runs
+                              # out of budget simply reports failure early.
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.25        # 0.25s, 0.5s — deliberately short: the budget
+_MAX_BACKOFF_S = 1.0          # above, not the backoff curve, is the real bound.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _GDACS_TC_RADIUS_KM = 1200.0  # a TC further than this from the query point is
                               # not "active weather" for that location.
+
+# --- 429 cooldown ------------------------------------------------------- #
+# A 429 from an hourly/daily quota does not clear in a backoff window, and
+# retrying into it adds load to an API that is already refusing us. After a 429
+# we stop calling that source until Retry-After (or _DEFAULT_COOLDOWN_S when
+# the header is absent) has passed. Capped so a hostile/garbled header cannot
+# park a source for the rest of the demo.
+_DEFAULT_COOLDOWN_S = 30.0
+_MAX_COOLDOWN_S = 300.0
+_COOLDOWN_LOCK = threading.Lock()
+_COOLDOWN: dict[str, float] = {}  # source label -> time.monotonic() deadline
+
+# --- result cache ------------------------------------------------------- #
+# Open-Meteo runs an ~11 km model grid refreshed roughly every 15 min, so two
+# queries about the same harbour inside the TTL would be answered from the same
+# grid cell with the same numbers — the second upstream call buys nothing and
+# spends quota. 0.05 deg (~5.5 km) is finer than the provider's own grid, so
+# collapsing to it cannot merge conditions the provider would have reported
+# differently.
+#
+# Module-level, not instance-level, for the same reason as INCOISAdapter's PFZ
+# cache: build_orchestration_graph() constructs a fresh WeatherDataAdapter per
+# request (graph.py run_query's TODO(P1)), so an instance attribute would never
+# hit. ONLY status='ok' results are cached — a transient failure must not get
+# stuck for the whole TTL (NFR-REL-1). Cached entries keep their original
+# fetched_at and data_time_epoch, so FR-WX-3 still surfaces the true
+# observation time rather than the time of the cache hit.
+_CACHE_GRID_DEG = 0.05
+_CACHE_MAX_ENTRIES = 256
+_CACHE_LOCK = threading.Lock()
+_RESULT_CACHE: dict[tuple[float, float], tuple[float, AdapterResult]] = {}
 _GDACS_NS = {
     "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
     "gdacs": "http://www.gdacs.org",
@@ -48,6 +106,143 @@ _GDACS_NS = {
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class RateLimitedError(Exception):
+    """Raised instead of issuing a request to a source that is inside its 429
+    cooldown. Caught by _safe like any other source failure — the point is to
+    fail without adding load, not to fail differently."""
+
+
+# ---------------------------------------------------------------------- #
+# Rate-limit handling (#106)
+# ---------------------------------------------------------------------- #
+def _cooldown_remaining_s(source: str) -> float:
+    with _COOLDOWN_LOCK:
+        until = _COOLDOWN.get(source)
+    return 0.0 if until is None else max(0.0, until - time.monotonic())
+
+
+def _start_cooldown(source: str, retry_after_s: float | None) -> None:
+    delay = _DEFAULT_COOLDOWN_S if retry_after_s is None else retry_after_s
+    delay = min(max(delay, 0.0), _MAX_COOLDOWN_S)
+    with _COOLDOWN_LOCK:
+        _COOLDOWN[source] = time.monotonic() + delay
+    logger.warning(
+        "WeatherDataAdapter: %s rate-limited (429) — pausing calls to it for %.0fs",
+        source,
+        delay,
+    )
+
+
+def _retry_after_s(response: httpx.Response) -> float | None:
+    """RFC 9110 Retry-After, delta-seconds form only. The HTTP-date form is
+    rare on rate limiters and is not worth a clock-skew bug here — treating it
+    as absent just falls back to _DEFAULT_COOLDOWN_S."""
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw.strip()))
+    except ValueError:
+        return None
+
+
+def _get(source: str, url: str, **kwargs: Any) -> httpx.Response:
+    """httpx.get hardened against transient upstream refusal.
+
+    Retries 429 / 5xx / transport errors up to _MAX_ATTEMPTS, honouring
+    Retry-After, with every attempt AND every sleep bounded by a
+    _SOURCE_BUDGET_S deadline. Raises on final failure (the caller's _safe
+    turns that into None, i.e. the existing degrade path) — a non-retryable
+    4xx still raises on the first attempt exactly as raise_for_status() did.
+    """
+    cooling = _cooldown_remaining_s(source)
+    if cooling > 0:
+        raise RateLimitedError(f"{source}: in 429 cooldown for another {cooling:.0f}s")
+
+    deadline = time.monotonic() + _SOURCE_BUDGET_S
+    last_error: Exception | None = None
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        retry_after: float | None = None
+        try:
+            response = httpx.get(url, timeout=min(_HTTP_TIMEOUT_S, remaining), **kwargs)
+        except httpx.TransportError as exc:  # connect/read/write/pool errors
+            last_error = exc
+        else:
+            if response.status_code not in _RETRYABLE_STATUS:
+                response.raise_for_status()  # non-retryable 4xx -> raise as before
+                return response
+            retry_after = _retry_after_s(response)
+            if response.status_code == 429:
+                _start_cooldown(source, retry_after)
+            last_error = httpx.HTTPStatusError(
+                f"{source}: retryable {response.status_code} from {url}",
+                request=response.request,
+                response=response,
+            )
+
+        if attempt == _MAX_ATTEMPTS:
+            break
+        delay = min(_MAX_BACKOFF_S, _BACKOFF_BASE_S * (2 ** (attempt - 1)))
+        if retry_after is not None:
+            delay = max(delay, retry_after)  # the server's number wins if larger
+        if delay >= deadline - time.monotonic():
+            break  # no budget left for another attempt; give up now, don't oversleep
+        time.sleep(delay)
+
+    assert last_error is not None  # loop only exits early after setting it
+    raise last_error
+
+
+# ---------------------------------------------------------------------- #
+# Result cache (#106)
+# ---------------------------------------------------------------------- #
+def _cache_key(lat: float, lon: float) -> tuple[float, float]:
+    g = _CACHE_GRID_DEG
+    return (round(lat / g) * g, round(lon / g) * g)
+
+
+def _cache_get(key: tuple[float, float], ttl_s: float) -> AdapterResult | None:
+    if ttl_s <= 0:
+        return None
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _RESULT_CACHE.get(key)
+        if entry is None:
+            return None
+        stored_at, result = entry
+        if now - stored_at > ttl_s:
+            del _RESULT_CACHE[key]
+            return None
+    return result
+
+
+def _cache_put(key: tuple[float, float], result: AdapterResult, ttl_s: float) -> None:
+    if ttl_s <= 0:
+        return
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        _RESULT_CACHE[key] = (now, result)
+        if len(_RESULT_CACHE) > _CACHE_MAX_ENTRIES:
+            for k in [k for k, (t, _) in _RESULT_CACHE.items() if now - t > ttl_s]:
+                del _RESULT_CACHE[k]
+        if len(_RESULT_CACHE) > _CACHE_MAX_ENTRIES:  # still full: drop the oldest
+            oldest = min(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k][0])
+            del _RESULT_CACHE[oldest]
+
+
+def _reset_rate_limit_state() -> None:
+    """Test hook: drop the module-level cache and cooldowns (see
+    tests/conftest.py). Not used in production code."""
+    with _CACHE_LOCK:
+        _RESULT_CACHE.clear()
+    with _COOLDOWN_LOCK:
+        _COOLDOWN.clear()
 
 
 def _rough_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -71,6 +266,7 @@ class WeatherDataAdapter(DataSourceAdapter):
         self._weatherapi_base = s.weatherapi_base_url.rstrip("/")
         self._weatherapi_key = s.weatherapi_key
         self._gdacs_base = s.gdacs_base_url.rstrip("/")
+        self._cache_ttl_s = s.weather_cache_ttl_seconds
 
     # ------------------------------------------------------------------ #
     # Public contract
@@ -87,6 +283,14 @@ class WeatherDataAdapter(DataSourceAdapter):
         except (KeyError, TypeError, ValueError):
             logger.warning("WeatherDataAdapter.fetch: bad params %r", params)
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
+
+        key = _cache_key(lat, lon)
+        cached = _cache_get(key, self._cache_ttl_s)
+        if cached is not None:
+            # Real data with its real timestamps (FR-WX-3) — see the cache note
+            # at the top of this module. Only 'ok' results are ever stored.
+            logger.debug("WeatherDataAdapter: cache hit for %s", key)
+            return cached
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             f_forecast = pool.submit(self._safe, self._fetch_forecast, lat, lon)
@@ -110,14 +314,18 @@ class WeatherDataAdapter(DataSourceAdapter):
             data = None
         if data is None:
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
-        return AdapterResult(data=data, fetched_at=now, status="ok")
+
+        result = AdapterResult(data=data, fetched_at=now, status="ok")
+        _cache_put(key, result, self._cache_ttl_s)
+        return result
 
     # ------------------------------------------------------------------ #
     # Per-source fetchers — each returns a plain dict / list, or raises
     # (the raise is caught by _safe and turned into None).
     # ------------------------------------------------------------------ #
     def _fetch_forecast(self, lat: float, lon: float) -> dict[str, Any]:
-        r = httpx.get(
+        r = _get(
+            "open-meteo/forecast",
             f"{self._forecast_base}/forecast",
             params={
                 "latitude": lat,
@@ -129,13 +337,12 @@ class WeatherDataAdapter(DataSourceAdapter):
                 "timeformat": "unixtime",
                 "wind_speed_unit": "kmh",
             },
-            timeout=_HTTP_TIMEOUT_S,
         )
-        r.raise_for_status()
         return r.json()
 
     def _fetch_marine(self, lat: float, lon: float) -> dict[str, Any]:
-        r = httpx.get(
+        r = _get(
+            "open-meteo/marine",
             f"{self._marine_base}/marine",
             params={
                 "latitude": lat,
@@ -143,9 +350,7 @@ class WeatherDataAdapter(DataSourceAdapter):
                 "current": "wave_height,wave_direction,wave_period",
                 "timeformat": "unixtime",
             },
-            timeout=_HTTP_TIMEOUT_S,
         )
-        r.raise_for_status()
         return r.json()
 
     def _fetch_weatherapi_alerts(self, lat: float, lon: float) -> list[dict[str, Any]] | None:
@@ -153,7 +358,8 @@ class WeatherDataAdapter(DataSourceAdapter):
         could not check (no key configured / request failed)."""
         if not self._weatherapi_key:
             return None
-        r = httpx.get(
+        r = _get(
+            "weatherapi/alerts",
             f"{self._weatherapi_base}/forecast.json",
             params={
                 "key": self._weatherapi_key,
@@ -162,20 +368,17 @@ class WeatherDataAdapter(DataSourceAdapter):
                 "alerts": "yes",
                 "aqi": "no",
             },
-            timeout=_HTTP_TIMEOUT_S,
         )
-        r.raise_for_status()
         return r.json().get("alerts", {}).get("alert", []) or []
 
     def _fetch_gdacs_tc(self, lat: float, lon: float) -> list[dict[str, Any]]:
         """GDACS GeoRSS -> the active tropical cyclones within
         _GDACS_TC_RADIUS_KM of (lat, lon). [] is a valid, common result."""
-        r = httpx.get(
+        r = _get(
+            "gdacs/rss",
             f"{self._gdacs_base}/rss.xml",
-            timeout=_HTTP_TIMEOUT_S,
             headers={"User-Agent": "ORCA/prototype (SIH 2026)"},
         )
-        r.raise_for_status()
         return _parse_gdacs_tc(r.text, lat, lon)
 
     # ------------------------------------------------------------------ #
