@@ -24,7 +24,7 @@ export default function ChatPanel() {
   const [sessionId, setSessionId] = useState(() => {
     return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
   });
-  const [isSessionVerified, setIsSessionVerified] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState<"pending" | "failed" | "success">("pending");
 
   // Verify session on mount
   useEffect(() => {
@@ -35,17 +35,25 @@ export default function ChatPanel() {
           // Session has no history on backend. Clear local storage for it.
           localStorage.removeItem(`orca_chat_history_${sessionId}`);
           setMessages([]);
+          setVerifyStatus("success");
         } else if (res.ok) {
           // Session valid, load rich history from local storage
           const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
           if (saved) {
-            setMessages(JSON.parse(saved));
+            const parsedSaved = JSON.parse(saved) as ChatMessage[];
+            setMessages((prev) => {
+              const prevIds = new Set(prev.map(m => m.id));
+              const newSaved = parsedSaved.filter(m => !prevIds.has(m.id));
+              return [...newSaved, ...prev];
+            });
           }
+          setVerifyStatus("success");
+        } else {
+          setVerifyStatus("failed");
         }
       } catch (err) {
         console.error("Failed to verify session history", err);
-      } finally {
-        setIsSessionVerified(true);
+        setVerifyStatus("failed");
       }
     };
     verifySession();
@@ -53,17 +61,19 @@ export default function ChatPanel() {
 
   // Persist messages whenever they change
   useEffect(() => {
-    if (isSessionVerified) {
+    if (verifyStatus === "success") {
       localStorage.setItem(`orca_chat_history_${sessionId}`, JSON.stringify(messages));
     }
-  }, [messages, sessionId, isSessionVerified]);
+  }, [messages, sessionId, verifyStatus]);
 
   const handleNewChat = () => {
+    wsClient.close();
     const newId = `sess_${Math.random().toString(36).substring(2, 9)}`;
     setSessionId(newId);
     localStorage.setItem("orca_session", newId);
     setMessages([]);
     setTraceSteps([]);
+    setVerifyStatus("pending");
   };
 
   useEffect(() => {
@@ -98,6 +108,10 @@ export default function ChatPanel() {
         window.dispatchEvent(new CustomEvent("trace_update", { detail: msg }));
       }
     });
+
+    return () => {
+      wsClient.close();
+    };
   }, [sessionId]);
 
   useEffect(() => {
@@ -110,7 +124,7 @@ export default function ChatPanel() {
     const trimmedInput = inputText.trim();
     if (!trimmedInput || isProcessing) return;
 
-    if (trimmedInput === "/" || trimmedInput.length < 2) {
+    if (trimmedInput.length < 2) {
       setMessages((prev) => [
         ...prev,
         { id: Date.now().toString(), sender: "user", text: inputText },

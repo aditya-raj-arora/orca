@@ -54,7 +54,13 @@
 }
 
 .chat-history::-webkit-scrollbar { width: 6px; }
-.chat-history::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 99px; }
+.chat-history::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
+}
+body.dark .chat-history::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
 
 .chat-message {
   max-width: 85%;

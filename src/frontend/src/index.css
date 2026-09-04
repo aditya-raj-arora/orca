@@ -152,6 +152,11 @@ h1, h2, h3, h4, h5, h6 {
   animation: pulse-safe 2s infinite alternate;
 }
 
+@keyframes pulse-safe {
+  from { opacity: 0.6; box-shadow: 0 0 4px var(--color-safe); }
+  to { opacity: 1; box-shadow: 0 0 12px var(--color-safe); }
+}
+
 .theme-toggle,
 .mobile-view-toggle {
   background: transparent;
@@ -214,7 +219,7 @@ h1, h2, h3, h4, h5, h6 {
   .app-header h1 {
     font-size: 1.25rem;
   }
-  .app-subtitle {
+  .subtitle {
     display: none; /* Hide subtitle to save space, keep ORCA */
   }
   .mobile-view-toggle {
