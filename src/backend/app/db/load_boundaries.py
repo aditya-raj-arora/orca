@@ -2,9 +2,11 @@
 Run manually: python app/db/load_boundaries.py
 """
 import json
+
 import psycopg
 
 from app.core.config import get_settings
+
 
 def _sync_url(async_url: str) -> str:
     return async_url.replace("postgresql+asyncpg://", "postgresql://")

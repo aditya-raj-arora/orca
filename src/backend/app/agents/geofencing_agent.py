@@ -94,7 +94,9 @@ class GeofencingAgent:
         for feature in result.data["features"]:
             geom = shape(json.loads(feature["geometry"]))
             line_coords = (
-                [geom.coords] if geom.geom_type == "LineString" else [line.coords for line in geom.geoms]
+                [geom.coords]
+                if geom.geom_type == "LineString"
+                else [line.coords for line in geom.geoms]
             )
             for coords in line_coords:
                 coords = list(coords)
@@ -107,6 +109,9 @@ class GeofencingAgent:
                 # cover the final vertex too (loop above only covers segment starts)
                 if coords:
                     lon_last, lat_last = coords[-1]
-                    min_dist = min(min_dist, _haversine_km(location.lat, location.lon, lat_last, lon_last))
+                    min_dist = min(
+                        min_dist,
+                        _haversine_km(location.lat, location.lon, lat_last, lon_last),
+                    )
 
         return min_dist <= self._imbl_buffer_km, min_dist
