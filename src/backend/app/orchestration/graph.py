@@ -129,8 +129,20 @@ async def _call_bounded(
         result = await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         return result, f"{agent_label}: data received"
     except TimeoutError:
+        # #124: the trace string below is user-facing (FR-PLAN-4 / FR-UI-3) and
+        # only ever reaches the WebSocket client, so without these log lines a
+        # degraded agent leaves no trace on the server at all. Every adapter in
+        # data_access/ logs before returning 'unavailable'; the graph was the
+        # one layer that degraded silently.
+        logger.warning(
+            "%s: exceeded its %ss budget — degrading to unavailable", agent_label, timeout
+        )
         return unavailable, f"{agent_label}: timed out after {timeout}s (unavailable)"
     except Exception as exc:  # noqa: BLE001 - deliberate: degrade, don't crash the query
+        # logger.exception, not .error: str(exc) alone is what left us unable to
+        # tell a timeout from a raised exception in production. The traceback and
+        # exception type are the whole point.
+        logger.exception("%s: raised — degrading to unavailable", agent_label)
         return unavailable, f"{agent_label}: error ({exc}) — treated as unavailable"
 
 
