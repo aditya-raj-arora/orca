@@ -52,9 +52,25 @@ provision a `databases:` resource — `DATABASE_URL` is set manually on
 6. **Fill in secret env vars** flagged `sync: false` in `render.yaml`, in the
    Render dashboard for `orca-backend`:
    - `DATABASE_URL` — the Supabase connection string from step 3
-   - `LLM_API_KEY`, `BHASHINI_API_KEY`, `BHASHINI_USER_ID`, `WEATHER_API_KEY`,
-     `WEATHER_API_BASE_URL` — see `docs/CREDENTIALS.md` for where to get each
-     and who owns getting it (P2/P3 mostly, per SRS §6.4 dependencies)
+   - `LLM_API_KEY`, `BHASHINI_API_KEY`, `BHASHINI_USER_ID` — see
+     `docs/CREDENTIALS.md` for where to get each and who owns getting it
+     (P2/P3 mostly, per SRS §6.4 dependencies)
+   - `WEATHERAPI_KEY` — **optional.** Only the severe-weather *alerts* leg of
+     FR-WX-2 depends on it; forecast, wave and GDACS cyclone data are all
+     keyless, so the app runs degraded-but-working without it (the
+     `WeatherResult.alerts_source_available` flag reports which alert sources
+     were actually reachable, so nothing silently reads as "no alerts").
+     Free key, email signup, no card: `weatherapi.com/signup.aspx`.
+
+   > **Watch the spelling: `WEATHERAPI_KEY`, not `WEATHER_API_KEY`.**
+   > `WEATHER_API_KEY` / `WEATHER_API_BASE_URL` were the retired OpenWeather
+   > plan, dropped from `render.yaml` at the 2026-09-01 contract-lock sync
+   > (PR #28). They no longer exist in the blueprint and setting them does
+   > nothing — this step used to name them, which is what #114 fixed.
+
+   Everything else the backend needs is a non-secret `value:` in `render.yaml`
+   (base URLs, `WEATHER_CACHE_TTL_SECONDS`, `GEOCODING_COUNTRY_CODE`, ...) and
+   is created with the service automatically — nothing to type in by hand.
 7. **Get the frontend's URL** (Render assigns something like
    `orca-frontend.onrender.com` after first deploy) and set it as
    `CORS_ALLOWED_ORIGINS` on `orca-backend`, and as `VITE_API_BASE_URL` /
