@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from app.orchestration.synthesis_agent import SynthesisAgent
+from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ExecutionPlan
 
 
@@ -110,3 +111,145 @@ def test_compose_all_none_results_short_circuits_without_llm_call():
 
     fake_client.models.generate_content.assert_not_called()
     assert response.citations == []
+
+# --------------------------------------------------------------------------- #
+# #39 — an UNSAFE / INSUFFICIENT_DATA verdict must survive composition intact
+# (FR-RISK-2, NFR-REL-2). The verdict tree makes these non-negotiable; that is
+# worth nothing if the sentence the fisherman hears softens them.
+# --------------------------------------------------------------------------- #
+def _unsafe_results() -> dict:
+    return {
+        "weather": {
+            "wind_speed_kmh": 8.0,
+            "wave_height_m": 0.4,
+            "active_alerts": [],
+            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
+            "status": "ok",
+        },
+        # A real RiskVerdict, not a dict: graph.py hands Synthesis the
+        # dataclass, and _degraded_response() reads .verdict off it via
+        # getattr — a dict fixture silently loses the verdict in the
+        # fallback path, which is exactly the path these tests assert on.
+        "risk_safety": RiskVerdict(
+            verdict="UNSAFE",
+            rationale="Location is within Marine Protected Area 'Gulf of Mannar'.",
+            contributing_factors=["within Marine Protected Area 'Gulf of Mannar'"],
+        ),
+    }
+
+
+def _plan() -> ExecutionPlan:
+    return ExecutionPlan(trace=["Planner: invoked weather, risk_safety"])
+
+
+def test_unsafe_verdict_softened_by_llm_is_rejected():
+    """The exact failure #39 exists to prevent: calm weather is real, but it
+    must never be offered as a reason to discount an UNSAFE verdict."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Winds are light and the sea is calm.", "source": "weather"},
+            {"text": "So conditions are fine and you should be safe to head out.",
+             "source": "risk_safety"},
+        ]
+    )
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _unsafe_results(), language="en"
+    )
+
+    # Regenerated once, failed again, then degraded rather than shipping it.
+    assert fake_client.models.generate_content.call_count == 2
+    assert "UNSAFE" in response.text
+    assert "should be safe to head out" not in response.text
+
+
+def test_unsafe_verdict_omitted_entirely_is_rejected():
+    """Silence is the likelier LLM failure than contradiction — a response
+    that just never mentions the verdict is as dangerous as one that
+    contradicts it."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Winds near the location are light.", "source": "weather"},
+            {"text": "Wave height is around 0.4 m.", "source": "weather"},
+        ]
+    )
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _unsafe_results(), language="en"
+    )
+
+    assert fake_client.models.generate_content.call_count == 2
+    assert "UNSAFE" in response.text
+
+
+def test_unsafe_verdict_stated_plainly_is_accepted():
+    """The guard must not be so blunt that it rejects a correct response —
+    favourable weather facts are still allowed alongside the verdict."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Winds are light and the sea is calm.", "source": "weather"},
+            {"text": "This location is inside the Gulf of Mannar Marine Protected "
+                     "Area, so it is UNSAFE to fish here.", "source": "risk_safety"},
+        ]
+    )
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _unsafe_results(), language="en"
+    )
+
+    assert fake_client.models.generate_content.call_count == 1
+    assert "calm" in response.text.lower()
+    assert "unsafe" in response.text.lower()
+
+
+def test_insufficient_data_verdict_softened_is_rejected():
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "No alerts were reported, so conditions are good.",
+             "source": "risk_safety"},
+        ]
+    )
+    results = {
+        "risk_safety": RiskVerdict(
+            verdict="INSUFFICIENT_DATA",
+            rationale="Geofence data is unavailable, so a safety verdict cannot be given.",
+            contributing_factors=["geofence data unavailable"],
+        ),
+    }
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), results, language="en"
+    )
+
+    assert fake_client.models.generate_content.call_count == 2
+    assert "INSUFFICIENT_DATA" in response.text
+
+
+def test_safe_and_caution_verdicts_are_not_constrained():
+    """The guard applies only to UNSAFE / INSUFFICIENT_DATA — a SAFE verdict
+    is allowed to read reassuringly, because it is reassuring."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Conditions are good and it is safe to head out.",
+             "source": "risk_safety"},
+        ]
+    )
+    results = {
+        "risk_safety": RiskVerdict(
+            verdict="SAFE",
+            rationale="No geofence violations or active weather alerts.",
+            contributing_factors=[],
+        ),
+    }
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), results, language="en"
+    )
+
+    assert fake_client.models.generate_content.call_count == 1
+    assert "safe to head out" in response.text
