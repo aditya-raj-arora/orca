@@ -93,6 +93,11 @@ class GeofencingAgent:
         min_dist = float("inf")
         for feature in result.data["features"]:
             geom = shape(json.loads(feature["geometry"]))
+            if geom.geom_type in ("Polygon", "MultiPolygon"):
+                # IMBL is published as an area (EEZ) polygon, not a line — the
+                # boundary itself (exterior + any interior rings) is what we
+                # want distance to, so reduce to its ring geometry first.
+                geom = geom.boundary
             line_coords = (
                 [geom.coords]
                 if geom.geom_type == "LineString"
