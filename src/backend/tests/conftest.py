@@ -38,3 +38,15 @@ def _clear_weather_rate_limit_state():
 
     weather_adapter._reset_rate_limit_state()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_geocode_cache():
+    """GeocodingAdapter caches successful lookups at module scope for the life
+    of the process (#110) — place coordinates don't change. Same leak hazard as
+    the two caches above: one test's stubbed lookup would answer the next
+    test's."""
+    from app.data_access import geocoding_adapter
+
+    geocoding_adapter._reset_cache()
+    yield

@@ -68,6 +68,13 @@ services:
       # it visible and tunable without a code change. 0 disables the cache.
       - key: WEATHER_CACHE_TTL_SECONDS
         value: "600"
+      # Planner place-name -> coordinates (#110). Pinned here because the wrong
+      # value is silently wrong rather than broken: without the country filter
+      # "Kochi" resolves to Kochi, JAPAN and every agent then answers
+      # confidently about the wrong country. GEOCODING_BASE_URL is left to its
+      # config.py default like the other base URLs.
+      - key: GEOCODING_COUNTRY_CODE
+        value: IN
       - key: INCOIS_BASE_URL
         value: https://incois.gov.in
       - key: GIS_BOUNDARY_DATA_PATH
