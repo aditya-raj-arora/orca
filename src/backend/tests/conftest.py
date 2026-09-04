@@ -24,3 +24,17 @@ def _clear_incois_pfz_cache():
     with incois_adapter._PFZ_CACHE_LOCK:
         incois_adapter._PFZ_CACHE.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_weather_rate_limit_state():
+    """Same hazard, same reason (#106): WeatherDataAdapter keeps its result
+    cache and its 429 cooldowns at module scope so they survive the
+    per-request adapter instances the graph builds. Without this, one test's
+    successful fetch would be replayed to the next test querying the same
+    ~5 km cell, and one test's simulated 429 would suppress the next test's
+    requests entirely."""
+    from app.data_access import weather_adapter
+
+    weather_adapter._reset_rate_limit_state()
+    yield

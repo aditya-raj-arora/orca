@@ -61,6 +61,13 @@ services:
       # don't need a Render override.
       - key: WEATHERAPI_KEY
         sync: false
+      # Rate-limit protection for the keyless Open-Meteo tier (#106). Deployed
+      # traffic is what actually hits the quota — a burst of queries about the
+      # same harbour is what produced the 429 this exists to stop — so the
+      # value is pinned here rather than left to the config.py default, to make
+      # it visible and tunable without a code change. 0 disables the cache.
+      - key: WEATHER_CACHE_TTL_SECONDS
+        value: "600"
       - key: INCOIS_BASE_URL
         value: https://incois.gov.in
       - key: GIS_BOUNDARY_DATA_PATH
