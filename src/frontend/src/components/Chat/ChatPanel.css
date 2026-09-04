@@ -231,3 +231,82 @@ body.dark .chat-history::-webkit-scrollbar-thumb {
   color: var(--color-text-muted);
   padding: 0.2rem 0;
 }
+
+/* State Containers */
+.chat-state-container {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  gap: 1rem;
+  animation: slideUp 0.3s ease-out forwards;
+}
+
+.empty-icon-wrap {
+  background: var(--color-surface-hover);
+  padding: 1.5rem;
+  border-radius: 50%;
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.1);
+}
+
+.mic-pulse {
+  animation: micPulse 2.5s infinite;
+}
+
+@keyframes micPulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 0.8; }
+}
+
+.empty-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text-main);
+  margin: 0;
+}
+
+.error-state svg {
+  color: var(--color-danger);
+  margin-bottom: 0.5rem;
+}
+
+.btn-retry {
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-main);
+  padding: 0.6rem 1.5rem;
+  border-radius: 99px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.btn-retry:hover {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+  transform: translateY(-2px);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

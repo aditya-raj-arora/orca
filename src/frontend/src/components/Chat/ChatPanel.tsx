@@ -208,6 +208,37 @@ export default function ChatPanel() {
       </div>
 
       <div className="chat-history" ref={chatHistoryRef} tabIndex={0} aria-label="Chat history messages" aria-live="polite">
+        {verifyStatus === "pending" && (
+          <div className="chat-state-container">
+            <div className="spinner"></div>
+          </div>
+        )}
+
+        {messages.length === 0 && verifyStatus === "success" && (
+          <div className="chat-state-container empty-state">
+            <div className="empty-icon-wrap">
+              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mic-pulse">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+              </svg>
+            </div>
+            <h3 className="empty-title">Tap to Speak</h3>
+          </div>
+        )}
+
+        {verifyStatus === "failed" && (
+          <div className="chat-state-container error-state">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <h3 className="empty-title">Connection Lost</h3>
+            <button onClick={handleNewChat} className="btn-retry">Retry Connection</button>
+          </div>
+        )}
+
         {messages.map((m) => (
           <div key={m.id} className={`chat-message ${m.sender}`}>
             {m.sender === "system" ? (
