@@ -31,13 +31,19 @@ export interface ZoneData {
 interface MapPanelProps {
   markers?: MarkerData[];
   zones?: ZoneData[];
+  weatherError?: boolean;
+  oceanError?: boolean;
+  geofenceError?: boolean;
 }
 
 const DEFAULT_CENTER: [number, number] = [10.0, 76.3];
 
 export default function MapPanel({
   markers = [],
-  zones = []
+  zones = [],
+  weatherError = false,
+  oceanError = false,
+  geofenceError = false
 }: MapPanelProps) {
   const getZoneStyle = (zone: ZoneData) => {
     if (zone.isViolation) {
@@ -74,31 +80,59 @@ export default function MapPanel({
   };
 
   return (
-    <MapContainer center={DEFAULT_CENTER} zoom={8} style={{ height: "100%", width: "100%" }}>
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+    <div style={{ position: "relative", height: "100%", width: "100%" }}>
+      <div style={{
+        position: "absolute",
+        top: "10px",
+        right: "10px",
+        zIndex: 1000,
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px"
+      }}>
+        {weatherError && (
+          <div style={{ background: "#fee2e2", color: "#991b1b", padding: "6px 10px", borderRadius: "4px", fontSize: "12px", border: "1px solid #f87171" }}>
+            Weather Data Unavailable
+          </div>
+        )}
+        {oceanError && (
+          <div style={{ background: "#fee2e2", color: "#991b1b", padding: "6px 10px", borderRadius: "4px", fontSize: "12px", border: "1px solid #f87171" }}>
+            Ocean Data Unavailable
+          </div>
+        )}
+        {geofenceError && (
+          <div style={{ background: "#fee2e2", color: "#991b1b", padding: "6px 10px", borderRadius: "4px", fontSize: "12px", border: "1px solid #f87171" }}>
+            Geofence Data Unavailable
+          </div>
+        )}
+      </div>
 
-      {markers.map((marker) => (
-        <Marker key={marker.id} position={[marker.lat, marker.lng]}>
-          <Popup>{marker.label}</Popup>
-        </Marker>
-      ))}
+      <MapContainer center={DEFAULT_CENTER} zoom={8} style={{ height: "100%", width: "100%" }}>
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
 
-      {zones.map((zone) => (
-        <Polygon key={zone.id} positions={zone.coordinates} pathOptions={getZoneStyle(zone)}>
-          <Popup>
-            <div>
-              <strong>{zone.label}</strong>
-              <br />
-              Type: {zone.zoneType || 'Standard Zone'}
-              {zone.isViolation && <span style={{ color: 'red', display: 'block' }}>Status: Violation Detected</span>}
-              {zone.isProximity && <span style={{ color: 'orange', display: 'block' }}>Status: Proximity Warning</span>}
-            </div>
-          </Popup>
-        </Polygon>
-      ))}
-    </MapContainer>
+        {markers.map((marker) => (
+          <Marker key={marker.id} position={[marker.lat, marker.lng]}>
+            <Popup>{marker.label}</Popup>
+          </Marker>
+        ))}
+
+        {zones.map((zone) => (
+          <Polygon key={zone.id} positions={zone.coordinates} pathOptions={getZoneStyle(zone)}>
+            <Popup>
+              <div>
+                <strong>{zone.label}</strong>
+                <br />
+                Type: {zone.zoneType || 'Standard Zone'}
+                {zone.isViolation && <span style={{ color: 'red', display: 'block' }}>Status: Violation Detected</span>}
+                {zone.isProximity && <span style={{ color: 'orange', display: 'block' }}>Status: Proximity Warning</span>}
+              </div>
+            </Popup>
+          </Polygon>
+        ))}
+      </MapContainer>
+    </div>
   );
 }
