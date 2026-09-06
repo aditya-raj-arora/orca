@@ -25,6 +25,7 @@ import asyncio
 import base64
 import logging
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -37,9 +38,9 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.core.session import ConversationContext
 from app.language.bhashini_client import BhashiniClient, BhashiniUnavailableError
+from app.orchestration import planner_agent as planner_module
 from app.orchestration.graph import build_orchestration_graph
 from app.orchestration.planner_agent import NormalizedQuery, PlannerAgent
-from app.orchestration.synthesis_agent import SynthesisAgent
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ComposedResponse
 
@@ -48,6 +49,10 @@ logger = logging.getLogger(__name__)
 # Marks the handler _apply_log_level() owns, so repeated startups adjust it
 # instead of stacking duplicates (#145).
 _ORCA_HANDLER_FLAG = "_orca_app_handler"
+
+# Built once, reused for every request (#149) — see _build_graph().
+_COMPILED_GRAPH: Any = None
+_COMPILED_GRAPH_LOCK = threading.Lock()
 
 
 def _apply_log_level() -> None:
@@ -305,10 +310,33 @@ def _build_graph():
     pattern) without needing real LLM/DB/external-API access — mirrors why
     build_orchestration_graph() itself takes optional agent params.
 
-    TODO(P1): also where the "cache the compiled graph rather than
-    rebuilding per request" TODO in graph.run_query() should eventually be
-    addressed, once that's worth the complexity."""
-    return build_orchestration_graph()
+    The compiled graph is built once and reused (#149) — the "cache the
+    compiled graph rather than rebuilding per request" TODO that stood here.
+    It became worth the complexity when it turned out to be a correctness
+    problem, not just a cost: rebuilding per request meant a fresh
+    PlannerAgent/SynthesisAgent per query, hence a fresh LLM client and a
+    fresh connection pool, hence a DNS + TCP + TLS handshake on every single
+    query. On a cold, CPU-throttled instance the first one exceeded even the
+    25s extraction deadline, so the first query after any deploy failed.
+
+    Agents are now shared across concurrent requests. They hold only lazily
+    built clients (httpx is thread-safe) and the adapters keep their state in
+    module-level caches guarded by their own locks — which is the pattern
+    those caches were written for. Per-query state lives in GraphState, not
+    on the agents.
+    """
+    global _COMPILED_GRAPH
+    with _COMPILED_GRAPH_LOCK:
+        if _COMPILED_GRAPH is None:
+            _COMPILED_GRAPH = build_orchestration_graph()
+        return _COMPILED_GRAPH
+
+
+def _reset_compiled_graph() -> None:
+    """Test hook (see tests/conftest.py). Not used in production code."""
+    global _COMPILED_GRAPH
+    with _COMPILED_GRAPH_LOCK:
+        _COMPILED_GRAPH = None
 
 
 async def _warm_llm_clients() -> None:
@@ -323,25 +351,47 @@ async def _warm_llm_clients() -> None:
     graph. The user's query then spends its deadline on work that has nothing
     to do with the model.
 
+    Constructing a client opens no socket, which is why #141 alone did not fix
+    it (#149): the import cost moved off the user's clock but DNS + TCP + TLS
+    did not, and that is the expensive half. So the warm-up now makes one real
+    round trip. Combined with the shared clients in planner_agent /
+    synthesis_agent, the connection it opens is the one the first query uses.
+
     Deliberately best-effort: warming is an optimisation, and a Gateway that
     refuses to boot because an LLM client could not be constructed is strictly
     worse than one that serves a degraded first query. Every agent below
     already degrades on its own (LLD §6).
     """
     try:
-        # Constructing the agents imports google.genai and builds the clients.
-        # Building the graph also pre-imports every agent module, so the first
-        # real query isn't doing it while the clock runs.
+        # Building the graph constructs every agent and adapter once, and the
+        # result is cached — so the first real query isn't doing it while the
+        # clock runs.
         await asyncio.to_thread(_build_graph)
-        await asyncio.to_thread(PlannerAgent()._build_llm_client)
-        await asyncio.to_thread(SynthesisAgent()._build_llm_client)
-        logger.info("Gateway: LLM clients and graph warmed at startup (#141)")
+        await asyncio.to_thread(_open_llm_connection)
+        logger.info("Gateway: LLM clients and graph warmed at startup (#141, #149)")
     except Exception as exc:  # noqa: BLE001 - warming must never block boot
         logger.warning(
-            "Gateway: startup warm-up failed (%s) — first query will pay the "
-            "import cost instead",
+            "Gateway: startup warm-up failed (%s) — the first query will pay "
+            "the connection cost instead",
             exc,
         )
+
+
+def _open_llm_connection() -> None:
+    """One minimal generate_content, purely to open the connection (#149).
+
+    A token of quota per container boot, against a first query that otherwise
+    spends 25s on a TLS handshake and then answers "could you rephrase".
+    Only the Planner's client is warmed: both agents' clients talk to the same
+    host, so DNS and the TLS session are shared even though the pools are not,
+    and the Planner is the call that has no fallback worth having.
+    """
+    client = PlannerAgent()._build_llm_client()  # the shared instance (#149)
+    client.models.generate_content(
+        model=planner_module._GEMINI_MODEL,
+        contents="ping",
+        config={"max_output_tokens": 1},
+    )
 
 
 @app.post("/api/v1/session", response_model=SessionResponse)

@@ -241,21 +241,28 @@ def test_unsafe_verdict_is_also_withheld_when_unexplained():
 
 
 def test_startup_warms_the_llm_clients(monkeypatch):
-    """The import and client construction happen before anyone is waiting."""
+    """Construction AND a real round trip, before anyone is waiting.
+
+    #141 warmed only the import and the client object, which is why it didn't
+    fix the cold first query: constructing a client opens no socket, and DNS +
+    TCP + TLS is the expensive half (#149)."""
     warmed: list[str] = []
+
+    class _FakeClient:
+        class models:  # noqa: N801 - mirrors the SDK's attribute shape
+            @staticmethod
+            def generate_content(**_kwargs):
+                warmed.append("round-trip")
 
     monkeypatch.setattr(gateway, "_build_graph", lambda: warmed.append("graph"))
     monkeypatch.setattr(
-        gateway.PlannerAgent, "_build_llm_client", lambda self: warmed.append("planner")
-    )
-    monkeypatch.setattr(
-        gateway.SynthesisAgent, "_build_llm_client", lambda self: warmed.append("synthesis")
+        gateway.PlannerAgent, "_build_llm_client", lambda self: _FakeClient()
     )
 
     with TestClient(gateway.app):  # entering the context runs startup
         pass
 
-    assert warmed == ["graph", "planner", "synthesis"]
+    assert warmed == ["graph", "round-trip"]
 
 
 def test_startup_survives_a_failing_warm_up(monkeypatch):
@@ -342,3 +349,77 @@ def test_the_log_handler_is_not_installed_twice(capsys):
         logging.getLogger("app.orchestration.graph").info("once-only-marker")
 
     assert capsys.readouterr().err.count("once-only-marker") == 1
+
+
+# --------------------------------------------------------------------------- #
+# #149 — the first query after a cold start used to time out.
+#
+# build_orchestration_graph() default-constructs fresh agents, and _build_graph()
+# ran per request, so every query built a new LLM client with a new httpx
+# connection pool: a fresh DNS + TCP + TLS handshake each time. On a throttled
+# instance the first one exceeded even the 25s extraction deadline.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_compiled_graph_is_built_once_and_reused():
+    """Per-request construction is what discarded the warmed client before the
+    first query could use it."""
+    builds = {"n": 0}
+
+    def _counting_build():
+        builds["n"] += 1
+        return object()
+
+    import app.orchestration.graph as graph_module
+
+    original = graph_module.build_orchestration_graph
+    gateway.build_orchestration_graph = _counting_build
+    try:
+        first = gateway._build_graph()
+        second = gateway._build_graph()
+    finally:
+        gateway.build_orchestration_graph = original
+
+    assert builds["n"] == 1
+    assert first is second
+
+
+def test_every_planner_instance_shares_one_llm_client(monkeypatch):
+    """Instances are cheap and come and go; the connection pool must not."""
+    from app.orchestration import planner_agent
+
+    constructed = {"n": 0}
+
+    def _construct(self):
+        constructed["n"] += 1
+        return object()
+
+    monkeypatch.setattr(planner_agent.PlannerAgent, "_construct_llm_client", _construct)
+
+    first = planner_agent.PlannerAgent()._build_llm_client()
+    second = planner_agent.PlannerAgent()._build_llm_client()  # a DIFFERENT instance
+
+    assert constructed["n"] == 1
+    assert first is second
+
+
+def test_every_synthesis_instance_shares_one_llm_client(monkeypatch):
+    """Same as the Planner: the graph builds a fresh SynthesisAgent, so a
+    per-instance client meant a per-query connection pool."""
+    from app.orchestration import synthesis_agent
+
+    constructed = {"n": 0}
+
+    def _construct(self):
+        constructed["n"] += 1
+        return object()
+
+    monkeypatch.setattr(
+        synthesis_agent.SynthesisAgent, "_construct_llm_client", _construct
+    )
+
+    first = synthesis_agent.SynthesisAgent()._build_llm_client()
+    second = synthesis_agent.SynthesisAgent()._build_llm_client()  # DIFFERENT instance
+
+    assert constructed["n"] == 1
+    assert first is second

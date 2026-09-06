@@ -80,3 +80,22 @@ def _clear_synthesis_sentence_cache():
 
     synthesis_agent.reset_sentence_cache()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_graph_and_llm_clients():
+    """#149 made three things process-global that used to be per-request: the
+    compiled graph, and one shared genai client per agent module. That is the
+    point — rebuilding them per request meant a new connection pool, and a new
+    TLS handshake, on every query — but it is also the same leak hazard as the
+    caches above, so it gets the same treatment.
+
+    Grouped into one fixture rather than three: they are a single change, and
+    conftest already carries five of these."""
+    import app.main as gateway
+    from app.orchestration import planner_agent, synthesis_agent
+
+    gateway._reset_compiled_graph()
+    planner_agent.reset_shared_llm_client()
+    synthesis_agent.reset_shared_llm_client()
+    yield

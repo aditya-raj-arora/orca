@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import get_settings
 from app.core.session import ConversationContext
@@ -67,6 +68,20 @@ _GEMINI_MODEL = "gemini-3.5-flash-lite"
 # `import google.genai` on the user's clock, which _warm_llm_clients() in
 # main.py now does at startup instead.
 _LLM_TIMEOUT_S = 25.0
+
+# One client, and therefore one connection pool, for every PlannerAgent
+# instance (#149) — see _build_llm_client() for why.
+_SHARED_LLM_CLIENT: Any = None
+_SHARED_LLM_CLIENT_LOCK = threading.Lock()
+
+
+def reset_shared_llm_client() -> None:
+    """Test hook (see tests/conftest.py) — mirrors the other module-level
+    caches. Not used in production code."""
+    global _SHARED_LLM_CLIENT
+    with _SHARED_LLM_CLIENT_LOCK:
+        _SHARED_LLM_CLIENT = None
+
 
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
@@ -302,6 +317,28 @@ class PlannerAgent:
         return GeocodingAdapter()
 
     def _build_llm_client(self):
+        """The client is shared across every PlannerAgent instance (#149).
+
+        graph.build_orchestration_graph() default-constructs a fresh
+        PlannerAgent, and main._build_graph() ran per request, so each query
+        used to build its own client with its own httpx connection pool — a
+        fresh DNS + TCP + TLS handshake on every single query. On a
+        CPU-throttled free instance the first one exceeded even the 25s
+        deadline, so the first query after any cold start failed while every
+        later one succeeded on OS-level DNS/TCP warmth.
+
+        Instances are cheap and come and go; the connection pool must not.
+        httpx clients are thread-safe, which is what makes sharing one across
+        concurrent requests fine.
+        """
+        global _SHARED_LLM_CLIENT
+        with _SHARED_LLM_CLIENT_LOCK:
+            if _SHARED_LLM_CLIENT is not None:
+                return _SHARED_LLM_CLIENT
+            _SHARED_LLM_CLIENT = self._construct_llm_client()
+            return _SHARED_LLM_CLIENT
+
+    def _construct_llm_client(self):
         # Imported lazily so importing this module never requires google-genai
         # to be installed (e.g. when only running route_query() unit tests).
         from google import genai
