@@ -205,6 +205,170 @@ def _round_floats(value: object, places: int = 2) -> object:
     return value
 
 
+def _field(result: object, name: str, default: Any = None) -> Any:
+    """Read one field off an agent result that may be a dataclass (what the
+    graph passes) or a plain dict (what fixtures pass) — the same dual shape
+    _verdict_phrased_safely() already handles."""
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
+def _deterministic_sentences(available_results: dict[str, object]) -> list[dict]:
+    """Agent outputs -> {"text", "source"} pairs, the same shape the LLM is
+    asked for, so everything downstream (safety checks, citations) is shared
+    (#139).
+
+    The wording is not arbitrary: it has to pass _response_is_safe() by
+    construction, which constrains two things in particular.
+      - When alerts_source_available is False, a weather sentence must flag
+        alert status as unknown and must avoid reading as an all-clear
+        (_alerts_unavailable_phrased_safely).
+      - An UNSAFE / INSUFFICIENT_DATA verdict must actually be stated, and no
+        risk_safety sentence may read as reassurance (_verdict_phrased_safely).
+    Risk goes last so the verdict reads as the conclusion of the facts above
+    it, which is also how the LLM is prompted to order it.
+    """
+    sentences: list[dict] = []
+
+    weather = available_results.get("weather")
+    if weather is not None:
+        sentences.extend(_weather_sentences(weather))
+
+    geofence = available_results.get("geofencing")
+    if geofence is not None:
+        sentences.extend(_geofence_sentences(geofence))
+
+    ocean = available_results.get("ocean")
+    if ocean is not None:
+        sentences.extend(_ocean_sentences(ocean))
+
+    ocean_params = available_results.get("ocean_params")
+    if ocean_params is not None:
+        sentences.extend(_ocean_param_sentences(ocean_params))
+
+    risk = available_results.get("risk_safety")
+    if risk is not None:
+        sentences.extend(_risk_sentences(risk))
+
+    return sentences
+
+
+def _weather_sentences(weather: object) -> list[dict]:
+    def _s(text: str) -> dict:
+        return {"text": text, "source": "weather"}
+
+    if _field(weather, "status") == "unavailable":
+        return [_s("Weather data is unavailable for this location.")]
+
+    out: list[dict] = []
+    wind = _field(weather, "wind_speed_kmh")
+    wave = _field(weather, "wave_height_m")
+    if wind is not None and wave is not None:
+        out.append(_s(f"Wind is {wind:.0f} km/h with a wave height of {wave:.1f} m."))
+    elif wind is not None:
+        out.append(_s(f"Wind is {wind:.0f} km/h."))
+    elif wave is not None:
+        out.append(_s(f"Wave height is {wave:.1f} m."))
+
+    visibility_m = _field(weather, "visibility_m")
+    if visibility_m is not None:
+        out.append(_s(f"Visibility is about {visibility_m / 1000:.1f} km."))
+
+    alerts = _field(weather, "active_alerts") or []
+    if not _field(weather, "alerts_source_available", True):
+        # NFR-REL-2: an empty list here means "unknown", never "clear". The
+        # wording must say so without any of the all-clear phrasing
+        # _alerts_unavailable_phrased_safely() rejects.
+        out.append(
+            _s(
+                "Severe-weather alert sources could not be reached, so whether any "
+                "alerts are active is unknown."
+            )
+        )
+    elif alerts:
+        out.append(_s("Active weather alerts: " + "; ".join(alerts) + "."))
+    else:
+        out.append(_s("No active weather alerts were reported."))
+    return out
+
+
+def _geofence_sentences(geofence: object) -> list[dict]:
+    def _s(text: str) -> dict:
+        return {"text": text, "source": "geofencing"}
+
+    out: list[dict] = []
+    distance_km = _field(geofence, "imbl_distance_km")
+    if _field(geofence, "within_mpa"):
+        name = _field(geofence, "mpa_name") or "an unnamed area"
+        out.append(_s(f"The location is inside the Marine Protected Area {name}."))
+    if _field(geofence, "within_imbl_buffer"):
+        out.append(
+            _s(
+                "The location is inside the international maritime boundary buffer"
+                + (f", {distance_km:.1f} km from the line." if distance_km is not None else ".")
+            )
+        )
+    if not out:
+        out.append(
+            _s(
+                "The location is outside any Marine Protected Area"
+                + (
+                    f" and {distance_km:.1f} km from the international maritime boundary."
+                    if distance_km is not None
+                    else "."
+                )
+            )
+        )
+    return out
+
+
+def _ocean_sentences(ocean: object) -> list[dict]:
+    def _s(text: str) -> dict:
+        return {"text": text, "source": "ocean"}
+
+    distance_km = _field(ocean, "distance_km")
+    if distance_km is None:
+        return []
+    text = f"The nearest potential fishing zone advisory is about {distance_km:.0f} km away."
+    if _field(ocean, "is_stale"):
+        # FR-OCEAN-4: a stale advisory is reported, never silently trusted.
+        text += " That advisory is stale, so treat it as indicative only."
+    return [_s(text)]
+
+
+def _ocean_param_sentences(params: object) -> list[dict]:
+    def _s(text: str) -> dict:
+        return {"text": text, "source": "ocean_params"}
+
+    facts: list[str] = []
+    sst = _field(params, "sea_surface_temp_c")
+    if sst is not None:
+        facts.append(f"sea surface temperature {sst:.1f} °C")
+    chlorophyll = _field(params, "chlorophyll_mg_m3")
+    if chlorophyll is not None:
+        facts.append(f"chlorophyll {chlorophyll:.2f} mg/m³")
+    # FR-OCEAN-2: None means the region publishes no value — say nothing rather
+    # than reporting an absence as a reading.
+    return [_s("Ocean conditions: " + " and ".join(facts) + ".")] if facts else []
+
+
+def _risk_sentences(risk: object) -> list[dict]:
+    def _s(text: str) -> dict:
+        return {"text": text, "source": "risk_safety"}
+
+    verdict = _field(risk, "verdict")
+    if not verdict:
+        return []
+    out = [_s(f"Safety assessment: {verdict}.")]
+    rationale = (_field(risk, "rationale") or "").strip()
+    if rationale:
+        # Risk composes this itself, already human-readable and already
+        # carrying its source timestamps (FR-RISK-2) — it needs no rewording.
+        out.append(_s(rationale))
+    return out
+
+
 def _contains_phrase(text: str, phrase: str) -> bool:
     """Substring match that won't fire mid-word. Needed because the phrase
     lists below overlap each other as raw substrings — "safe to" sits inside
@@ -273,7 +437,7 @@ class SynthesisAgent:
 
         sentences = self._generate_within(prompt_payload, deadline, attempt="first")
         if sentences is None:
-            return self._degraded_response(available_results, plan)
+            return self._compose_without_llm(available_results, plan)
 
         if not self._response_is_safe(sentences, available_results):
             logger.warning(
@@ -283,17 +447,17 @@ class SynthesisAgent:
             regenerated = self._generate_within(prompt_payload, deadline, attempt="regeneration")
             if regenerated is None:
                 # Out of budget or the call failed. The first attempt is still
-                # unsafe and must not ship — degrade, exactly as a second
-                # failed check would (FR-SYN-2).
-                return self._degraded_response(available_results, plan)
+                # unsafe and must not ship — compose the answer ourselves,
+                # exactly as a second failed check would (FR-SYN-2).
+                return self._compose_without_llm(available_results, plan)
             sentences = regenerated
 
         if not self._response_is_safe(sentences, available_results):
             logger.error(
                 "Synthesis: safety check failed twice — refusing to ship an "
-                "uncited or falsely-reassuring claim. Returning degraded response."
+                "uncited or falsely-reassuring claim. Composing without the LLM."
             )
-            return self._degraded_response(available_results, plan)
+            return self._compose_without_llm(available_results, plan)
 
         text = " ".join(s["text"] for s in sentences)
         citations = self._build_citations(sentences, available_results)
@@ -519,6 +683,54 @@ class SynthesisAgent:
                 continue
             citations.append(Citation(source=agent_name, timestamp=_extract_data_timestamp(result)))
         return citations
+
+    # ------------------------------------------------------------------ #
+    # Composition without the LLM (#139)
+    # ------------------------------------------------------------------ #
+    def _compose_without_llm(
+        self, available_results: dict[str, object], plan: ExecutionPlan
+    ) -> ComposedResponse:
+        """A real answer, built from the agent outputs, when the LLM couldn't
+        give us one.
+
+        The model's job here was only ever phrasing — every fact was computed
+        and checked before Synthesis was called, and Risk's rationale is
+        already a complete human-readable sentence. So a slow or failing Gemini
+        call is no reason to tell a fisherman we have nothing; it is a reason
+        to say it less fluently.
+
+        verified=True, deliberately. These sentences are generated FROM the
+        agent fields and tagged with the agent they came from, so citation
+        coverage holds by construction and there is nothing for the model to
+        hallucinate — #121's "don't render a verdict we can't explain" is
+        satisfied, and the verdict finally reaches the user on this path.
+        Which is the whole point: a CAUTION computed from real data used to be
+        withheld purely because only an LLM sentence could carry it.
+
+        Runs through the same _response_is_safe() gate as the model's output
+        rather than trusting itself. It should pass by construction; if it ever
+        doesn't, that is a bug in the sentence builders and the apology is
+        still there to catch it.
+        """
+        sentences = _deterministic_sentences(available_results)
+        if not sentences or not self._response_is_safe(sentences, available_results):
+            logger.error(
+                "Synthesis: deterministically-composed response failed its own "
+                "safety checks — this is a bug in the sentence builders, not a "
+                "model failure. Falling back to the apology.",
+            )
+            return self._degraded_response(available_results, plan)
+
+        logger.info(
+            "Synthesis: composed %d sentences without the LLM (#139).", len(sentences)
+        )
+        return ComposedResponse(
+            text=" ".join(s["text"] for s in sentences),
+            citations=self._build_citations(sentences, available_results),
+            map_payload=MapPayload(),
+            trace=list(plan.trace),
+            verified=True,
+        )
 
     def _degraded_response(
         self, available_results: dict[str, object], plan: ExecutionPlan
