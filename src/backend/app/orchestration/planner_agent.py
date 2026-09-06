@@ -53,7 +53,20 @@ _GEMINI_MODEL = "gemini-3.5-flash-lite"
 # which made every extraction fail instantly and sent well-formed queries down
 # the keyword fallback into a clarifying question. 10s is the floor the API
 # allows, not a preference; it cannot be tuned below that here.
-_LLM_TIMEOUT_S = 10.0
+#
+# Deliberately more generous than Synthesis's budget, because the two have very
+# different fallbacks (#141). Synthesis degrades to a complete deterministic
+# answer (#139), so failing fast there costs fluency. Extraction degrades to
+# keyword matching, which cannot resolve a place name — the whole query
+# collapses into "could you rephrase", which is not an answer at all. A slow
+# correct plan beats a fast useless one.
+#
+# This is insurance against a hang, not a latency target: measured against the
+# real API this call is 0.9s (median of 5, no thought tokens — see #141). The
+# only reason it ever approached 10s was a cold container paying for
+# `import google.genai` on the user's clock, which _warm_llm_clients() in
+# main.py now does at startup instead.
+_LLM_TIMEOUT_S = 25.0
 
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
