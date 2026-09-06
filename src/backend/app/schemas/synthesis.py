@@ -50,3 +50,13 @@ class ComposedResponse:
     citations: list[Citation] = field(default_factory=list)
     map_payload: MapPayload = field(default_factory=MapPayload)
     trace: list[str] = field(default_factory=list)
+    # False when this text is a degraded stand-in rather than a composed,
+    # citation-checked answer (#133). The Gateway must not render a verdict
+    # badge above an unverified response — that is #121's rule, which until now
+    # was enforced by comparing the response against a sentinel OBJECT in
+    # graph.py. That identity check could only see the one degradation the
+    # graph itself built, so SynthesisAgent's own _degraded_response() slipped
+    # past it and could put a green SAFE badge over text saying it had failed
+    # to verify anything. Additive with a safe default: an omitted flag means
+    # "verified", so every existing construction keeps its meaning.
+    verified: bool = True

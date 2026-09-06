@@ -297,19 +297,26 @@ def _synthesis_node(agent: SynthesisAgent):
                 "trace": ["Synthesis: skipped (clarification requested)"],
             }
 
-        sentinel = _unavailable_composed_response()
         composed, trace_line = await _call_bounded(
             agent.compose,
             plan,
             state.get("results", {}),
             state.get("language", "en"),
-            unavailable=sentinel,
+            unavailable=_unavailable_composed_response(),
             agent_label="Synthesis Agent",
             timeout=SYNTHESIS_TIMEOUT_SECONDS,
         )
         return {
             "composed": composed,
-            "synthesis_ok": composed is not sentinel,
+            # #133: was `composed is not sentinel`, which could only recognise
+            # the degradation this node built itself. SynthesisAgent has its own
+            # degraded response (returned when it runs out of budget, or when a
+            # safety check rejects the composition twice) and that one sailed
+            # through the identity check as if it were verified — putting a
+            # verdict badge over text that says nothing could be verified.
+            # ComposedResponse.verified is now the single signal, whoever built
+            # the response.
+            "synthesis_ok": composed.verified,
             "trace": [trace_line],
         }
 
@@ -437,7 +444,8 @@ def _unavailable_composed_response() -> ComposedResponse:
     given (contrast with a genuine INSUFFICIENT_DATA verdict, which IS an
     answer)."""
     return ComposedResponse(
-        text="Sorry, I couldn't put together an answer for that just now — please try again."
+        text="Sorry, I couldn't put together an answer for that just now — please try again.",
+        verified=False,
     )
 
 
