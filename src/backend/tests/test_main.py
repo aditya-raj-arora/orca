@@ -269,3 +269,34 @@ def test_startup_survives_a_failing_warm_up(monkeypatch):
 
     with TestClient(gateway.app) as client:
         assert client.get("/healthz").status_code == 200
+
+
+def test_startup_applies_the_configured_log_level(monkeypatch):
+    """#143: core/config.py has declared log_level since it was written and
+    nothing ever read it, so the effective level was the root default of
+    WARNING and every logger.info() in the codebase was invisible in
+    production — including the line naming the component that answers a large
+    share of queries."""
+    import logging
+
+    app_logger = logging.getLogger("app")
+    original = app_logger.level
+    app_logger.setLevel(logging.NOTSET)
+    try:
+        with TestClient(gateway.app):
+            assert app_logger.level == logging.INFO
+    finally:
+        app_logger.setLevel(original)
+
+
+def test_an_unknown_log_level_does_not_break_startup(monkeypatch):
+    """A typo'd env var must not take the Gateway down — logging.getLevelName
+    returns a string for an unknown name, which setLevel would reject."""
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "log_level", "NOT_A_LEVEL", raising=False)
+
+    with TestClient(gateway.app) as client:
+        assert client.get("/healthz").status_code == 200

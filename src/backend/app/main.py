@@ -44,10 +44,36 @@ from app.schemas.synthesis import ComposedResponse
 
 logger = logging.getLogger(__name__)
 
+def _apply_log_level() -> None:
+    """Make core/config.py's `log_level` mean something (#143).
+
+    It has been declared since the settings module was written and read by
+    nothing — no basicConfig, no setLevel, no dictConfig — so the effective
+    level was the root default of WARNING and every logger.info() in this
+    codebase was invisible in production. That is not cosmetic: "Synthesis:
+    composed N sentences without the LLM" is an INFO line, so the component
+    answering a large share of queries left no trace at all, and its firing had
+    to be inferred from the wording of the response.
+
+    Scoped to the `app` namespace rather than the root logger on purpose —
+    INFO on httpx/google-genai/uvicorn internals is noise we do not want, and
+    turning it on for everything is how people end up ignoring logs.
+    """
+    level = logging.getLevelName(get_settings().log_level.upper())
+    if not isinstance(level, int):  # unknown name -> getLevelName returns a str
+        logger.warning(
+            "Unknown log_level %r — leaving logging at its default",
+            get_settings().log_level,
+        )
+        return
+    logging.getLogger("app").setLevel(level)
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # _warm_llm_clients is defined further down (it needs _build_graph); this
-    # only resolves it when startup actually runs.
+    # _apply_log_level / _warm_llm_clients are defined further down (they need
+    # _build_graph); this only resolves them when startup actually runs.
+    _apply_log_level()
     await _warm_llm_clients()
     yield
 

@@ -42,9 +42,11 @@ unsupported on 3.x models.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
@@ -203,6 +205,68 @@ def _round_floats(value: object, places: int = 2) -> object:
     if isinstance(value, list):
         return [_round_floats(v, places) for v in value]
     return value
+
+
+# --- successful-composition cache (#143) --------------------------------- #
+# The Gemini call misses often enough on the deployed instance that an
+# identical repeat question re-rolls the same dice. Caching a composition that
+# SUCCEEDED lets the repeat return the good answer instantly.
+#
+# Keyed on the whole prompt payload, which carries every agent's
+# data_timestamp — so a hit means the underlying data is genuinely unchanged,
+# not merely a similar-looking question. Two rules matter more than the
+# caching itself, and both are enforced at the call site in compose():
+#   1. Only sentences that passed _response_is_safe() are ever stored.
+#   2. The degraded/deterministic fallback is NEVER stored. Caching it would
+#      freeze a bad outcome for the whole TTL and suppress the retry that
+#      might have succeeded — and it is pure Python to recompute anyway.
+# Sentences are cached rather than the ComposedResponse so the trace stays
+# per-query.
+_SENTENCE_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_SENTENCE_CACHE_LOCK = threading.Lock()
+_SENTENCE_CACHE_TTL_S = 600.0
+_SENTENCE_CACHE_MAX_ENTRIES = 128
+
+
+def _prompt_cache_key(prompt_payload: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(prompt_payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _sentences_cache_get(key: str) -> list[dict] | None:
+    now = time.monotonic()
+    with _SENTENCE_CACHE_LOCK:
+        entry = _SENTENCE_CACHE.get(key)
+        if entry is None:
+            return None
+        stored_at, sentences = entry
+        if now - stored_at > _SENTENCE_CACHE_TTL_S:
+            del _SENTENCE_CACHE[key]
+            return None
+    # Copied out: callers build a response from these and must not be able to
+    # mutate what the next query will read.
+    return [dict(s) for s in sentences]
+
+
+def _sentences_cache_put(key: str, sentences: list[dict]) -> None:
+    now = time.monotonic()
+    with _SENTENCE_CACHE_LOCK:
+        _SENTENCE_CACHE[key] = (now, [dict(s) for s in sentences])
+        if len(_SENTENCE_CACHE) > _SENTENCE_CACHE_MAX_ENTRIES:
+            for stale in [
+                k for k, (t, _) in _SENTENCE_CACHE.items() if now - t > _SENTENCE_CACHE_TTL_S
+            ]:
+                del _SENTENCE_CACHE[stale]
+        if len(_SENTENCE_CACHE) > _SENTENCE_CACHE_MAX_ENTRIES:  # still full: drop oldest
+            oldest = min(_SENTENCE_CACHE, key=lambda k: _SENTENCE_CACHE[k][0])
+            del _SENTENCE_CACHE[oldest]
+
+
+def reset_sentence_cache() -> None:
+    """Test hook — mirrors http_client.reset_cooldowns()."""
+    with _SENTENCE_CACHE_LOCK:
+        _SENTENCE_CACHE.clear()
 
 
 def _field(result: object, name: str, default: Any = None) -> Any:
@@ -429,6 +493,15 @@ class SynthesisAgent:
             "agents": {name: _serialize_result(r) for name, r in available_results.items()},
         }
 
+        # #143: an identical payload we have already composed successfully
+        # needs no model call at all — and skipping it turns what might have
+        # been a fallback into the good answer.
+        cache_key = _prompt_cache_key(prompt_payload)
+        cached = _sentences_cache_get(cache_key)
+        if cached is not None:
+            logger.info("Synthesis: reusing a cached composition (#143).")
+            return self._response_from(cached, available_results, plan)
+
         # #133: every path from here returns a real response. compose() spends
         # its own budget rather than letting the graph kill it mid-call, because
         # _degraded_response() below still carries the verdict and the graph's
@@ -459,12 +532,24 @@ class SynthesisAgent:
             )
             return self._compose_without_llm(available_results, plan)
 
-        text = " ".join(s["text"] for s in sentences)
-        citations = self._build_citations(sentences, available_results)
+        # Only reached once the sentences have passed every safety check, which
+        # is the only thing that may be cached (#143). Both fallback paths
+        # return above without storing anything.
+        _sentences_cache_put(cache_key, sentences)
+        return self._response_from(sentences, available_results, plan)
 
+    def _response_from(
+        self,
+        sentences: list[dict],
+        available_results: dict[str, object],
+        plan: ExecutionPlan,
+    ) -> ComposedResponse:
+        """Sentences -> the shipped response. Shared by a fresh composition and
+        a cached one so a cache hit can't drift from a live answer; the trace is
+        rebuilt from the CURRENT plan rather than whatever was cached."""
         return ComposedResponse(
-            text=text,
-            citations=citations,
+            text=" ".join(s["text"] for s in sentences),
+            citations=self._build_citations(sentences, available_results),
             # TODO(P2, Issue #14): populate from geofence/ocean results once
             # real agents land — coordinate exact marker/zone shape with P6
             # (owns Leaflet rendering, see MapPayload TODO).
