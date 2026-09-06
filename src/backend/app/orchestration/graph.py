@@ -70,6 +70,27 @@ AGENT_TIMEOUT_SECONDS = 6.0
 # constant exists to prevent.
 SYNTHESIS_TIMEOUT_SECONDS = 10.0
 
+# Weather gets its own budget too (#131), for the same reason Synthesis does:
+# AGENT_TIMEOUT_SECONDS is sized for a specialist making ONE bounded HTTP call,
+# and the weather node is not that. It fans out to four external sources
+# (forecast, marine, WeatherAPI, GDACS) and then, when Open-Meteo 429s from
+# Render's shared egress IP, assembles the WeatherAPI fallback leg (#116/#117)
+# — work that by definition only starts after a source has already spent its
+# http_client.SOURCE_BUDGET_S failing.
+#
+# At 6s that left ~1s for the fallback, the JSON/RSS parsing and thread
+# scheduling, on a free-tier box sharing one core with the rest of the graph.
+# It wasn't enough: the deployed backend timed the node out at 6.0s and the
+# WeatherAPI fallback landed 104ms later, so a query that HAD recovered its
+# weather data threw it away and answered INSUFFICIENT_DATA anyway.
+#
+# Sized as SOURCE_BUDGET_S plus real headroom, not as "6 wasn't enough, try 8":
+# a source can no longer outlive its own budget (that was the other half of
+# #131), so the slowest leg lands at ~5s and everything after it has 3s.
+# test_graph.py pins that relationship so the two constants can't drift apart
+# again in a comment-only coupling.
+WEATHER_TIMEOUT_SECONDS = 8.0
+
 
 def _merge_dicts(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Reducer for GraphState.results: the three specialist nodes run in
@@ -174,6 +195,7 @@ def _weather_node(agent: WeatherAgent):
             window,
             unavailable=_unavailable_weather_result(),
             agent_label="Weather Agent",
+            timeout=WEATHER_TIMEOUT_SECONDS,
         )
         return {"results": {"weather": result}, "trace": [trace_line]}
 

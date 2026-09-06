@@ -248,12 +248,17 @@ def test_non_retryable_4xx_is_not_retried(
     assert router.calls["/forecast"] == 1
 
 
-def test_retry_never_exceeds_the_agent_timeout_budget(
+def test_retry_never_exceeds_the_weather_node_budget(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # NFR-PERF-2: the graph gives a node AGENT_TIMEOUT_SECONDS, and the retry
-    # loop must stay inside it however many attempts the upstream buys.
-    from app.orchestration.graph import AGENT_TIMEOUT_SECONDS
+    # NFR-PERF-2: the graph gives the weather node WEATHER_TIMEOUT_SECONDS, and
+    # the retry loop must stay inside it however many attempts the upstream buys.
+    #
+    # NOTE (#131): this router answers instantly, so what this measures is the
+    # BACKOFF curve, not request time — it passed all through the production
+    # incident where the real fetch overran its budget. The bound on an actual
+    # request is pinned by test_attempt_timeout_* below; keep both.
+    from app.orchestration.graph import WEATHER_TIMEOUT_SECONDS
 
     _healthy(**{"/forecast": _502}).install(monkeypatch)
     started = time.monotonic()
@@ -261,7 +266,41 @@ def test_retry_never_exceeds_the_agent_timeout_budget(
     elapsed = time.monotonic() - started
 
     assert res.status == "unavailable"
-    assert elapsed < AGENT_TIMEOUT_SECONDS
+    assert elapsed < WEATHER_TIMEOUT_SECONDS
+
+
+def test_attempt_timeout_bounds_connect_plus_read_by_the_budget() -> None:
+    """#131: the bare float this used to pass was applied by httpx to connect,
+    read, write AND pool separately, so one attempt could outlive the whole
+    SOURCE_BUDGET_S it was supposedly bounded by — which is how the weather
+    node overran a 6s budget on a 5s source budget."""
+    from app.data_access.http_client import HTTP_TIMEOUT_S, _attempt_timeout
+
+    for remaining in (0.05, 0.5, 1.0, 3.0, 5.0, 60.0):
+        t = _attempt_timeout(remaining)
+        budget = min(HTTP_TIMEOUT_S, max(remaining, 0.1))
+        assert t.connect + t.read == pytest.approx(budget)
+        assert t.read > 0  # a 0s read fails on the spot and wastes the attempt
+
+
+def test_get_passes_a_split_timeout_not_a_bare_float(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The split above is worthless if get() doesn't actually hand it to httpx."""
+    from app.data_access import http_client
+
+    seen: dict[str, object] = {}
+
+    def _capture(url, **kw):
+        seen["timeout"] = kw.get("timeout")
+        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", _capture)
+    http_client.get("test/source", "https://example.invalid/x")
+
+    timeout = seen["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect + timeout.read <= http_client.SOURCE_BUDGET_S
 
 
 # --------------------------------------------------------------------------- #
