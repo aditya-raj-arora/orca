@@ -97,6 +97,32 @@ _MIN_CALL_BUDGET_S = 2.0
 # using its full deadline gets killed before compose() can degrade gracefully.
 _MIN_API_DEADLINE_S = 10.0
 
+# Gemini 3.x thinks before it answers, and on this call it thinks far more than
+# it writes — 1185 thought tokens against 260 output tokens. Measured on the
+# real API with this exact prompt, 3 runs each (#137):
+#
+#   as shipped (no thinking_config)   min 5.7s   median 9.8s   max 11.2s
+#   thinking_budget=0                 400 INVALID_ARGUMENT — rejected outright
+#   thinking_level=MINIMAL            min 3.3s   median 5.0s   max 30.5s
+#   thinking_level=LOW                min 2.3s   median 3.4s   max 14.9s
+#
+# The default median lands ON the 10s deadline the API enforces, so the
+# deployed query 504'd about as often as not — a coin flip, not an anomaly.
+# LOW moves the median to 3.4s, comfortably inside it.
+#
+# Note thinking_budget=0 is NOT available here despite the SDK documenting
+# "0 is DISABLED" — this model refuses it with a 400, so the level enum is the
+# only lever. MINIMAL is not obviously better than LOW and had the worse tail
+# in the sample.
+#
+# This is a median fix, not a guarantee: LOW still spiked to 14.9s in 3 runs,
+# and the deadline cannot go below _MIN_API_DEADLINE_S to compensate. The
+# degraded path below stays load-bearing — it just stops being the routine
+# outcome. Composition quality is protected by the citation/phrasing checks
+# either way; if less thinking starts tripping them, the regeneration warning
+# in compose() says so.
+_THINKING_LEVEL = "LOW"
+
 _SYNTHESIS_SYSTEM_PROMPT = """You are the response-composition step of a marine \
 safety assistant. You will be given the outputs of one or more specialist \
 agents (weather, ocean, ocean_params, geofencing, risk_safety) as JSON, plus \
@@ -321,7 +347,11 @@ class SynthesisAgent:
             f"{_SYNTHESIS_SYSTEM_PROMPT}\n\nAgent outputs and language:\n"
             f"{json.dumps(prompt_payload, indent=2)}"
         )
-        config: dict[str, Any] = {"response_mime_type": "application/json"}
+        config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            # #137 — see _THINKING_LEVEL for the measurements behind this.
+            "thinking_config": {"thinking_level": _THINKING_LEVEL},
+        }
         if budget_s is not None:
             # #133: without this the SDK's own (very long) default applies and a
             # stalled call runs until the graph kills compose(). Milliseconds —
