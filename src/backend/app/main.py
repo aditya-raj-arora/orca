@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -44,6 +45,11 @@ from app.schemas.synthesis import ComposedResponse
 
 logger = logging.getLogger(__name__)
 
+# Marks the handler _apply_log_level() owns, so repeated startups adjust it
+# instead of stacking duplicates (#145).
+_ORCA_HANDLER_FLAG = "_orca_app_handler"
+
+
 def _apply_log_level() -> None:
     """Make core/config.py's `log_level` mean something (#143).
 
@@ -58,6 +64,18 @@ def _apply_log_level() -> None:
     Scoped to the `app` namespace rather than the root logger on purpose —
     INFO on httpx/google-genai/uvicorn internals is noise we do not want, and
     turning it on for everything is how people end up ignoring logs.
+
+    Setting the level is necessary and NOT sufficient (#145). A logger's level
+    only decides which records it creates; emitting them is a handler's job,
+    and under uvicorn the root logger has no handlers at all. Every record from
+    `app.*` was therefore going to logging.lastResort, which is hard-coded to
+    WARNING — so INFO passed the logger check and was dropped by the handler.
+    #144 raised the logger level alone and changed nothing. Hence the explicit
+    handler below.
+
+    lastResort also writes a bare message with no level marker, which is why
+    Render labelled our logger.error lines as "info" and made filtering by
+    level useless. The formatter fixes that too.
     """
     level = logging.getLevelName(get_settings().log_level.upper())
     if not isinstance(level, int):  # unknown name -> getLevelName returns a str
@@ -66,13 +84,26 @@ def _apply_log_level() -> None:
             get_settings().log_level,
         )
         return
-    logging.getLogger("app").setLevel(level)
+
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(level)
+
+    # Idempotent: startup runs many times across the test suite, and a second
+    # handler would double every line.
+    if not any(getattr(h, _ORCA_HANDLER_FLAG, False) for h in app_logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)  # same stream uvicorn uses
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        setattr(handler, _ORCA_HANDLER_FLAG, True)
+        app_logger.addHandler(handler)
+    for handler in app_logger.handlers:
+        if getattr(handler, _ORCA_HANDLER_FLAG, False):
+            handler.setLevel(level)
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # _apply_log_level / _warm_llm_clients are defined further down (they need
-    # _build_graph); this only resolves them when startup actually runs.
+    # _warm_llm_clients is defined further down (it needs _build_graph); this
+    # only resolves it when startup actually runs.
     _apply_log_level()
     await _warm_llm_clients()
     yield
