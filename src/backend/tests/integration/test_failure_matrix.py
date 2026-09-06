@@ -290,8 +290,14 @@ async def test_llm_timeout_at_extraction_still_completes_using_prior_turn_locati
 
 async def test_synthesis_llm_failure_degrades_to_a_safe_apology_not_a_crash(fault_http):
     """The Synthesis half of the same row. A composition failure must not
-    discard the query: the graph substitutes a response that claims nothing
-    and cites nothing, rather than shipping an uncited answer (FR-SYN-2)."""
+    discard the query.
+
+    Since #139 the fallback is no longer an apology that claims nothing: the
+    facts were computed and checked before Synthesis ran, so the response is
+    composed deterministically from them. FR-SYN-2 is stronger here, not
+    weaker — every sentence is generated from one agent's fields and tagged
+    with it, so the answer is cited by construction rather than by asking a
+    model to cite itself."""
     fault_http()
 
     class _PlannerOnlyLLM(ScriptedLLM):
@@ -305,8 +311,20 @@ async def test_synthesis_llm_failure_degrades_to_a_safe_apology_not_a_crash(faul
 
     composed = state["composed"]
     assert composed.text
-    assert composed.citations == []
-    assert "safe" not in composed.text.lower()
+    # Cited, not empty — and every citation names an agent that actually ran.
+    assert composed.citations
+    assert {c.source for c in composed.citations} <= set(state["results"])
+
+    # Whatever verdict Risk reached on the fallback data, the answer has to
+    # state it — that is what makes it an answer rather than an apology.
+    text = composed.text.lower()
+    assert _verdict(state).lower() in text
+
+    # Checking phrasing rather than the bare substring "safe", which the word
+    # "safety" trips on in Risk's own rationale. None of these are phrasings
+    # the deterministic builders can produce, for any verdict.
+    for reassurance in ("safe to", "conditions are good", "all clear", "no risk"):
+        assert reassurance not in text
 
 
 # --------------------------------------------------------------------- #

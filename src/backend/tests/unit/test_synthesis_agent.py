@@ -17,8 +17,10 @@ from app.orchestration.synthesis_agent import (
     _THINKING_LEVEL,
     SynthesisAgent,
 )
+from app.schemas.geofence import GeofenceResult
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ExecutionPlan
+from app.schemas.weather import WeatherResult
 
 
 def _fake_llm_response(sentences: list[dict]) -> MagicMock:
@@ -73,8 +75,11 @@ def test_compose_degrades_on_bad_source():
 
     response = agent.compose(plan, results, language="en")
 
-    assert response.citations == []
-    assert "verified" in response.text.lower() or "caution" in response.text.lower()
+    # The uncited sentence is rejected twice, and since #139 what replaces it is
+    # a deterministic statement of what we actually know — cited, not an apology.
+    assert "Everything looks fine" not in response.text
+    assert "unavailable" in response.text.lower()
+    assert {c.source for c in response.citations} == {"weather"}
 
 
 def test_compose_filters_none_results():
@@ -344,7 +349,8 @@ def test_no_budget_left_returns_the_verdict_instead_of_calling_the_llm():
 
 def test_a_failing_llm_call_still_returns_the_verdict():
     """An exception used to propagate to _call_bounded and become the graph's
-    sentinel — losing the verdict as well as the explanation."""
+    sentinel — losing the verdict as well as the explanation. Since #139 the
+    verdict comes back inside a composed, cited answer."""
     fake_client = MagicMock()
     fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
 
@@ -353,7 +359,7 @@ def test_a_failing_llm_call_still_returns_the_verdict():
     )
 
     assert "CAUTION" in response.text
-    assert response.citations == []  # nothing verified, so nothing cited
+    assert {c.source for c in response.citations} == {"risk_safety"}
 
 
 def test_regeneration_is_skipped_when_the_budget_cannot_fit_it():
@@ -382,11 +388,17 @@ def test_regeneration_is_skipped_when_the_budget_cannot_fit_it():
     assert "CAUTION" in response.text
 
 
-def test_degraded_response_never_names_a_safe_verdict():
-    """#133/NFR-REL-2: repeating a CAUTION we couldn't explain is conservative;
-    'I have a SAFE assessment...' on a response that verified nothing is the
-    reassurance this system exists not to give. Caught by the failure-matrix
-    row when _degraded_response() first became reachable from more paths."""
+def test_degraded_response_never_names_a_safe_verdict(monkeypatch):
+    """#133/NFR-REL-2: 'I have a SAFE assessment...' on a response that verified
+    nothing is the reassurance this system exists not to give.
+
+    Since #139 the apology is the LAST resort, not the first — reached only
+    when there is nothing to compose from either. Driven here by making
+    deterministic composition come up empty, so the guard stays tested on the
+    path that still reaches it."""
+    import app.orchestration.synthesis_agent as sa
+
+    monkeypatch.setattr(sa, "_deterministic_sentences", lambda _results: [])
     fake_client = MagicMock()
     fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
     results = {
@@ -403,10 +415,13 @@ def test_degraded_response_never_names_a_safe_verdict():
     assert response.verified is False
 
 
-def test_degraded_responses_are_marked_unverified():
+def test_degraded_responses_are_marked_unverified(monkeypatch):
     """The Gateway withholds the verdict badge on these (#121). It used to tell
     them apart by object identity against the graph's own sentinel, which this
     one — built inside SynthesisAgent — sailed straight past."""
+    import app.orchestration.synthesis_agent as sa
+
+    monkeypatch.setattr(sa, "_deterministic_sentences", lambda _results: [])
     fake_client = MagicMock()
     fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
 
@@ -452,3 +467,144 @@ def test_thinking_config_is_a_shape_the_sdk_accepts():
     )
 
     assert coerced.thinking_config.thinking_level == _THINKING_LEVEL
+
+
+# --------------------------------------------------------------------------- #
+# #139 — a real answer without the LLM.
+#
+# The model's job was only ever phrasing: every fact is computed and checked
+# before Synthesis is called. So a slow or failing Gemini call is no reason to
+# tell a fisherman we have nothing.
+# --------------------------------------------------------------------------- #
+
+
+def _dead_client() -> MagicMock:
+    client = MagicMock()
+    client.models.generate_content.side_effect = RuntimeError("gemini unavailable")
+    return client
+
+
+def _full_results(**overrides) -> dict:
+    results = {
+        "weather": WeatherResult(
+            wind_speed_kmh=22.3,
+            wave_height_m=1.4,
+            active_alerts=[],
+            data_timestamp=datetime(2026, 9, 6, 17, 21, tzinfo=UTC),
+            status="ok",
+        ),
+        "geofencing": GeofenceResult(
+            within_imbl_buffer=False,
+            imbl_distance_km=214.8,
+            within_mpa=False,
+        ),
+        "risk_safety": RiskVerdict(
+            verdict="CAUTION",
+            rationale="No active weather alerts, but conditions are marginal: wind 22 km/h.",
+            contributing_factors=["wind 22 km/h"],
+        ),
+    }
+    results.update(overrides)
+    return results
+
+
+def test_without_the_llm_the_answer_is_real_and_verified():
+    """The headline: a dead LLM now yields a factual, cited answer carrying the
+    verdict — not 'I couldn't generate a fully verified explanation'."""
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan(), _full_results(), language="en"
+    )
+
+    assert response.verified is True  # so the Gateway renders the verdict
+    assert "couldn't" not in response.text.lower()
+    assert "22 km/h" in response.text  # the real wind reading
+    assert "CAUTION" in response.text
+    assert {c.source for c in response.citations} == {
+        "weather",
+        "geofencing",
+        "risk_safety",
+    }
+
+
+def test_without_the_llm_every_sentence_still_carries_a_citation():
+    """FR-SYN-2 holds by construction here — each sentence is generated from
+    one agent's fields — but assert it rather than assuming it."""
+    from app.orchestration.synthesis_agent import _deterministic_sentences
+
+    results = _full_results()
+    sentences = _deterministic_sentences(results)
+
+    assert sentences
+    assert all(s["source"] in results for s in sentences)
+
+
+def test_without_the_llm_an_unsafe_verdict_is_stated_plainly():
+    """The deterministic path must clear the same #39 guard the LLM output
+    does: state the verdict, never soften it."""
+    results = _full_results(
+        risk_safety=RiskVerdict(
+            verdict="UNSAFE",
+            rationale="Location is within Marine Protected Area 'Gulf of Mannar'.",
+            contributing_factors=["within Marine Protected Area 'Gulf of Mannar'"],
+        ),
+        geofencing=GeofenceResult(
+            within_imbl_buffer=False,
+            imbl_distance_km=180.0,
+            within_mpa=True,
+            mpa_name="'Gulf of Mannar'",
+        ),
+    )
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan(), results, language="en"
+    )
+
+    assert response.verified is True
+    assert "UNSAFE" in response.text
+    assert "Gulf of Mannar" in response.text
+
+
+def test_without_the_llm_unknown_alerts_are_never_phrased_as_clear():
+    """NFR-REL-2, the trap this system is most careful about: with both alert
+    sources down, active_alerts == [] means UNKNOWN, not 'no alerts'. The
+    deterministic wording has to satisfy the same phrasing check the LLM's
+    does — if it didn't, compose() would reject its own output and apologise."""
+    results = _full_results(
+        weather=WeatherResult(
+            wind_speed_kmh=8.0,
+            wave_height_m=0.4,
+            active_alerts=[],
+            alerts_source_available=False,
+            data_timestamp=datetime(2026, 9, 6, 17, 21, tzinfo=UTC),
+            status="ok",
+        ),
+        risk_safety=RiskVerdict(
+            verdict="INSUFFICIENT_DATA",
+            rationale=(
+                "Both severe-weather alert sources are currently unreachable, so "
+                "whether any alerts are active cannot be confirmed."
+            ),
+            contributing_factors=["weather alert sources unavailable"],
+        ),
+    )
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan(), results, language="en"
+    )
+    text = response.text.lower()
+
+    assert response.verified is True
+    assert "unknown" in text
+    assert "no active weather alerts" not in text
+    assert "INSUFFICIENT_DATA" in response.text
+
+
+def test_the_apology_remains_when_there_is_nothing_to_compose_from():
+    """No agent results at all -> nothing to state. The apology is still the
+    honest answer, and it stays unverified so no badge is rendered."""
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan(), {"ocean": None, "geofencing": None}, language="en"
+    )
+
+    assert response.verified is False
+    assert response.citations == []
