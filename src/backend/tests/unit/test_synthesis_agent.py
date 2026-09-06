@@ -14,6 +14,7 @@ from app.orchestration.synthesis_agent import (
     _BUDGET_RESERVE_S,
     _MIN_API_DEADLINE_S,
     _MIN_CALL_BUDGET_S,
+    _THINKING_LEVEL,
     SynthesisAgent,
 )
 from app.schemas.risk import RiskVerdict
@@ -414,3 +415,40 @@ def test_degraded_responses_are_marked_unverified():
     )
 
     assert response.verified is False
+
+
+def test_thinking_level_is_capped_on_every_generation():
+    """#137: unconstrained, this model spends 1185 thought tokens to write 260
+    and the median call lands ON the 10s deadline the API enforces — the
+    deployed query 504'd about as often as not. LOW measured a 3.4s median.
+
+    Pinned as the enum, not a budget: this model rejects thinking_budget=0 with
+    a 400 despite the SDK documenting "0 is DISABLED"."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
+    )
+
+    SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    config = fake_client.models.generate_content.call_args.kwargs["config"]
+    assert config["thinking_config"] == {"thinking_level": _THINKING_LEVEL}
+
+
+def test_thinking_config_is_a_shape_the_sdk_accepts():
+    """The dict above is coerced by the SDK, not validated by us — so validate
+    it here. Two production breakages this session (a 5s deadline, and
+    thinking_budget=0) were both shapes the API rejected that no test saw,
+    because every other test mocks the client away."""
+    from google.genai import types
+
+    coerced = types.GenerateContentConfig(
+        **{
+            "response_mime_type": "application/json",
+            "thinking_config": {"thinking_level": _THINKING_LEVEL},
+        }
+    )
+
+    assert coerced.thinking_config.thinking_level == _THINKING_LEVEL
