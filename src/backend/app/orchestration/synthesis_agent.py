@@ -69,7 +69,12 @@ _GEMINI_MODEL = "gemini-3.6-flash"
 # So compose() spends a budget of its own and always returns something. Must
 # stay under graph.SYNTHESIS_TIMEOUT_SECONDS, which is now only the backstop for
 # compose() itself hanging; tests/test_graph.py pins the two together.
-_DEFAULT_BUDGET_S = 9.0
+#
+# Sized around _MIN_API_DEADLINE_S below (#135): one call may legitimately use
+# the full 10s the API insists on, and this has to leave room for that plus the
+# reserve, or compose() would be killed on exactly the call it was given the
+# budget to make.
+_DEFAULT_BUDGET_S = 11.0
 
 # Kept back from the last call so compose() can build and return its degraded
 # response before the graph's backstop fires. The work is microseconds; this is
@@ -80,6 +85,17 @@ _BUDGET_RESERVE_S = 0.5
 # spending the remaining budget on a call that cannot finish only delays the
 # degraded response we would return anyway.
 _MIN_CALL_BUDGET_S = 2.0
+
+# Gemini REJECTS a shorter deadline than this outright (#135):
+#   400 INVALID_ARGUMENT "Manually set deadline 5s is too short.
+#                         Minimum allowed deadline is 10s."
+# #134 shipped 8.5s here and turned every call into an instant 400 in
+# production. The deadline is a ceiling, not a reservation — a call that
+# answers in 2s still answers in 2s — so we send the floor when our own budget
+# is smaller, and let compose()'s budget decide whether starting a call is
+# worth it. graph.SYNTHESIS_TIMEOUT_SECONDS must stay above this, or a call
+# using its full deadline gets killed before compose() can degrade gracefully.
+_MIN_API_DEADLINE_S = 10.0
 
 _SYNTHESIS_SYSTEM_PROMPT = """You are the response-composition step of a marine \
 safety assistant. You will be given the outputs of one or more specialist \
@@ -309,8 +325,10 @@ class SynthesisAgent:
         if budget_s is not None:
             # #133: without this the SDK's own (very long) default applies and a
             # stalled call runs until the graph kills compose(). Milliseconds —
-            # see google.genai.types.HttpOptions.timeout.
-            config["http_options"] = {"timeout": int(budget_s * 1000)}
+            # see google.genai.types.HttpOptions.timeout — and never below the
+            # API's own minimum, which it rejects with a 400 (#135).
+            deadline_s = max(budget_s, _MIN_API_DEADLINE_S)
+            config["http_options"] = {"timeout": int(deadline_s * 1000)}
         response = client.models.generate_content(
             model=_GEMINI_MODEL,
             contents=contents,

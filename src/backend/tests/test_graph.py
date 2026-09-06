@@ -292,9 +292,13 @@ def test_synthesis_spends_its_budget_before_the_graph_backstop_fires():
     gives up BEFORE _call_bounded kills it — the graph's timeout discards that
     response for a sentinel carrying no verdict at all."""
     from app.orchestration.graph import SYNTHESIS_TIMEOUT_SECONDS
-    from app.orchestration.synthesis_agent import _DEFAULT_BUDGET_S
+    from app.orchestration.synthesis_agent import _DEFAULT_BUDGET_S, _MIN_API_DEADLINE_S
 
     assert _DEFAULT_BUDGET_S < SYNTHESIS_TIMEOUT_SECONDS
+    # #135: one call may legitimately use the full deadline Gemini insists on,
+    # so the backstop has to clear it — otherwise compose() gets killed on the
+    # very call its budget was sized for and the degraded response is lost.
+    assert SYNTHESIS_TIMEOUT_SECONDS > _MIN_API_DEADLINE_S
 
 
 def test_weather_budget_leaves_headroom_over_one_sources_budget():
