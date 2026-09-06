@@ -6,10 +6,15 @@ LLM call, no dependency on P3/P4's agent dataclasses (plain dicts work fine,
 see synthesis_agent.py's _serialize_result()).
 """
 import json
+import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from app.orchestration.synthesis_agent import SynthesisAgent
+from app.orchestration.synthesis_agent import (
+    _BUDGET_RESERVE_S,
+    _MIN_CALL_BUDGET_S,
+    SynthesisAgent,
+)
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ExecutionPlan
 
@@ -253,3 +258,129 @@ def test_safe_and_caution_verdicts_are_not_constrained():
 
     assert fake_client.models.generate_content.call_count == 1
     assert "safe to head out" in response.text
+
+
+# --------------------------------------------------------------------------- #
+# #133 — compose() spends its own budget and always returns a real response
+#
+# Before this, nothing bounded a single generate_content call: the client was
+# built with no timeout, so a stalled call ran until graph.py's node timeout
+# killed compose() outright. That kill discards the degraded response below —
+# which still carries the Risk verdict — in favour of the graph's sentinel,
+# which carries nothing. On the deployed backend it threw away a real CAUTION.
+# --------------------------------------------------------------------------- #
+
+
+def _caution_results() -> dict:
+    return {
+        "risk_safety": RiskVerdict(
+            verdict="CAUTION",
+            rationale="Moderate wind, no alerts",
+            contributing_factors=["wind"],
+        ),
+    }
+
+
+def test_generation_is_bounded_by_the_remaining_budget():
+    """The per-call timeout is what makes the budget real — without it the SDK
+    default applies and a stalled call outlives compose() entirely."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
+    )
+
+    SynthesisAgent(llm_client=fake_client, budget_s=9.0).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    config = fake_client.models.generate_content.call_args.kwargs["config"]
+    timeout_ms = config["http_options"]["timeout"]
+    assert 0 < timeout_ms <= 9.0 * 1000  # milliseconds, per HttpOptions.timeout
+
+
+def test_no_budget_left_returns_the_verdict_instead_of_calling_the_llm():
+    """With too little budget for a round trip, compose() must not start one —
+    it returns the degraded response, which still names the verdict."""
+    fake_client = MagicMock()
+
+    response = SynthesisAgent(llm_client=fake_client, budget_s=0.0).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    fake_client.models.generate_content.assert_not_called()
+    assert "CAUTION" in response.text
+
+
+def test_a_failing_llm_call_still_returns_the_verdict():
+    """An exception used to propagate to _call_bounded and become the graph's
+    sentinel — losing the verdict as well as the explanation."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    assert "CAUTION" in response.text
+    assert response.citations == []  # nothing verified, so nothing cited
+
+
+def test_regeneration_is_skipped_when_the_budget_cannot_fit_it():
+    """The first attempt tripped a safety check, so it must not ship (FR-SYN-2).
+    With no budget for a second call the answer is the degraded response — not
+    a second call that gets cut off, and not the unsafe sentences."""
+    fake_client = MagicMock()
+
+    def _slow_and_uncited(*_args, **_kwargs):
+        # The call has to actually spend budget — a MagicMock returning
+        # instantly leaves the deadline untouched and both calls fit.
+        time.sleep(0.3)
+        # Uncited source -> _citation_coverage_ok() rejects it.
+        return _fake_llm_response([{"text": "Everything looks fine.", "source": "ocean"}])
+
+    fake_client.models.generate_content.side_effect = _slow_and_uncited
+
+    # Enough budget for the first call, not for a second once it has spent 0.3s.
+    agent = SynthesisAgent(
+        llm_client=fake_client, budget_s=_MIN_CALL_BUDGET_S + _BUDGET_RESERVE_S + 0.2
+    )
+    response = agent.compose(_plan(), _caution_results(), language="en")
+
+    assert fake_client.models.generate_content.call_count == 1
+    assert "Everything looks fine" not in response.text
+    assert "CAUTION" in response.text
+
+
+def test_degraded_response_never_names_a_safe_verdict():
+    """#133/NFR-REL-2: repeating a CAUTION we couldn't explain is conservative;
+    'I have a SAFE assessment...' on a response that verified nothing is the
+    reassurance this system exists not to give. Caught by the failure-matrix
+    row when _degraded_response() first became reachable from more paths."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
+    results = {
+        "risk_safety": RiskVerdict(
+            verdict="SAFE", rationale="No violations or alerts", contributing_factors=[]
+        ),
+    }
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), results, language="en"
+    )
+
+    assert "safe" not in response.text.lower()
+    assert response.verified is False
+
+
+def test_degraded_responses_are_marked_unverified():
+    """The Gateway withholds the verdict badge on these (#121). It used to tell
+    them apart by object identity against the graph's own sentinel, which this
+    one — built inside SynthesisAgent — sailed straight past."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    assert response.verified is False

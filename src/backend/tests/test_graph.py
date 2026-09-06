@@ -286,6 +286,17 @@ def test_weather_gets_a_larger_budget_than_the_specialists():
     assert WEATHER_TIMEOUT_SECONDS > AGENT_TIMEOUT_SECONDS
 
 
+def test_synthesis_spends_its_budget_before_the_graph_backstop_fires():
+    """#133: compose() now owns a budget and returns its own degraded response
+    (which still carries the verdict) when it runs out. That only works if it
+    gives up BEFORE _call_bounded kills it — the graph's timeout discards that
+    response for a sentinel carrying no verdict at all."""
+    from app.orchestration.graph import SYNTHESIS_TIMEOUT_SECONDS
+    from app.orchestration.synthesis_agent import _DEFAULT_BUDGET_S
+
+    assert _DEFAULT_BUDGET_S < SYNTHESIS_TIMEOUT_SECONDS
+
+
 def test_weather_budget_leaves_headroom_over_one_sources_budget():
     """The coupling that #131 was: http_client bounds ONE source, the graph
     bounds the whole node, and the gap between them has to cover the fallback

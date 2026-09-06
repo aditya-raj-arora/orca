@@ -45,8 +45,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from app.core.config import get_settings
 from app.schemas.common import Citation
@@ -55,6 +57,29 @@ from app.schemas.synthesis import ComposedResponse, ExecutionPlan, MapPayload
 logger = logging.getLogger(__name__)
 
 _GEMINI_MODEL = "gemini-3.6-flash"
+
+# --- compose()'s own budget (#133) --------------------------------------- #
+# Nothing used to bound a single generate_content call: the client was built
+# without a timeout, so when one stalled it ran until graph.py's node timeout
+# killed compose() outright. That kill is the worst available outcome — it
+# discards _degraded_response() below, which still carries the Risk verdict, in
+# favour of the graph's "couldn't put together an answer" sentinel that carries
+# nothing. On the deployed backend that threw away a real CAUTION verdict.
+#
+# So compose() spends a budget of its own and always returns something. Must
+# stay under graph.SYNTHESIS_TIMEOUT_SECONDS, which is now only the backstop for
+# compose() itself hanging; tests/test_graph.py pins the two together.
+_DEFAULT_BUDGET_S = 9.0
+
+# Kept back from the last call so compose() can build and return its degraded
+# response before the graph's backstop fires. The work is microseconds; this is
+# for thread scheduling on a box sharing one core with the rest of the graph.
+_BUDGET_RESERVE_S = 0.5
+
+# A Gemini round trip needs more than this to be worth starting. Below it,
+# spending the remaining budget on a call that cannot finish only delays the
+# degraded response we would return anyway.
+_MIN_CALL_BUDGET_S = 2.0
 
 _SYNTHESIS_SYSTEM_PROMPT = """You are the response-composition step of a marine \
 safety assistant. You will be given the outputs of one or more specialist \
@@ -165,10 +190,16 @@ def _extract_data_timestamp(result: object) -> datetime:
 
 
 class SynthesisAgent:
-    def __init__(self, llm_client: object | None = None) -> None:
+    def __init__(
+        self, llm_client: object | None = None, budget_s: float | None = None
+    ) -> None:
         # Same lazy-construction pattern as PlannerAgent — unit tests never
         # need a real API key.
         self._llm_client = llm_client
+        # Overridable per-instance so tests can drive the out-of-budget paths
+        # without sleeping through the real thing (same pattern as
+        # RiskSafetyAgent's thresholds).
+        self._budget_s = _DEFAULT_BUDGET_S if budget_s is None else budget_s
 
     def compose(
         self,
@@ -192,14 +223,28 @@ class SynthesisAgent:
             "agents": {name: _serialize_result(r) for name, r in available_results.items()},
         }
 
-        sentences = self._generate_sentences(prompt_payload)
+        # #133: every path from here returns a real response. compose() spends
+        # its own budget rather than letting the graph kill it mid-call, because
+        # _degraded_response() below still carries the verdict and the graph's
+        # sentinel does not.
+        deadline = time.monotonic() + self._budget_s
+
+        sentences = self._generate_within(prompt_payload, deadline, attempt="first")
+        if sentences is None:
+            return self._degraded_response(available_results, plan)
 
         if not self._response_is_safe(sentences, available_results):
             logger.warning(
                 "Synthesis: safety check failed on first attempt — "
                 "regenerating once (FR-SYN-2 / NFR-REL-1)."
             )
-            sentences = self._generate_sentences(prompt_payload)
+            regenerated = self._generate_within(prompt_payload, deadline, attempt="regeneration")
+            if regenerated is None:
+                # Out of budget or the call failed. The first attempt is still
+                # unsafe and must not ship — degrade, exactly as a second
+                # failed check would (FR-SYN-2).
+                return self._degraded_response(available_results, plan)
+            sentences = regenerated
 
         if not self._response_is_safe(sentences, available_results):
             logger.error(
@@ -221,16 +266,55 @@ class SynthesisAgent:
             trace=list(plan.trace),
         )
 
-    def _generate_sentences(self, prompt_payload: dict) -> list[dict]:
+    def _generate_within(
+        self, prompt_payload: dict, deadline: float, attempt: str
+    ) -> list[dict] | None:
+        """One bounded generation, or None if it can't or didn't produce one.
+
+        None is not an error path the caller has to distinguish — every reason
+        we return it (no budget left, the call failed, the call timed out) leads
+        to the same place: a degraded response that still carries the verdict.
+        """
+        budget_s = deadline - time.monotonic() - _BUDGET_RESERVE_S
+        if budget_s < _MIN_CALL_BUDGET_S:
+            logger.warning(
+                "Synthesis: %.1fs left at the %s attempt — too little for a "
+                "round trip, returning a degraded response instead of being "
+                "cut off mid-call (#133).",
+                max(budget_s, 0.0),
+                attempt,
+            )
+            return None
+        try:
+            return self._generate_sentences(prompt_payload, budget_s)
+        except Exception as exc:  # noqa: BLE001 - degrade with the verdict intact
+            logger.error(
+                "Synthesis: %s generation failed after %.1fs of budget — "
+                "returning a degraded response",
+                attempt,
+                budget_s,
+                exc_info=exc,
+            )
+            return None
+
+    def _generate_sentences(
+        self, prompt_payload: dict, budget_s: float | None = None
+    ) -> list[dict]:
         client = self._llm_client or self._build_llm_client()
         contents = (
             f"{_SYNTHESIS_SYSTEM_PROMPT}\n\nAgent outputs and language:\n"
             f"{json.dumps(prompt_payload, indent=2)}"
         )
+        config: dict[str, Any] = {"response_mime_type": "application/json"}
+        if budget_s is not None:
+            # #133: without this the SDK's own (very long) default applies and a
+            # stalled call runs until the graph kills compose(). Milliseconds —
+            # see google.genai.types.HttpOptions.timeout.
+            config["http_options"] = {"timeout": int(budget_s * 1000)}
         response = client.models.generate_content(
             model=_GEMINI_MODEL,
             contents=contents,
-            config={"response_mime_type": "application/json"},
+            config=config,
             # NOTE: no `temperature` — see module docstring MODEL NOTE.
         )
         data = json.loads(response.text)
@@ -391,12 +475,23 @@ class SynthesisAgent:
     def _degraded_response(
         self, available_results: dict[str, object], plan: ExecutionPlan
     ) -> ComposedResponse:
-        """Last resort — no available data, or citation coverage failed
-        twice. States only the verdict (if present) and never ships an
-        unverified sentence to a fisherman."""
+        """Last resort — no available data, no budget left, a failed LLM call,
+        or citation coverage failed twice. States only the verdict (if present
+        and if naming it cannot reassure) and never ships an unverified
+        sentence to a fisherman.
+
+        Returns verified=False so the Gateway withholds the verdict badge
+        (#121/#133): the text below explains that nothing could be verified,
+        and a badge above it saying otherwise would contradict it.
+        """
         risk = available_results.get("risk_safety")
         verdict = getattr(risk, "verdict", None) if risk is not None else None
-        if verdict:
+        # A CAUTION/UNSAFE/INSUFFICIENT_DATA verdict is a warning, and repeating
+        # a warning we could not fully explain is the conservative move. SAFE is
+        # reassurance, and "I have a SAFE assessment ..." on a response that
+        # verified nothing is precisely the claim this system exists not to make
+        # (NFR-REL-2) — so it falls through to the neutral wording below.
+        if verdict and verdict != "SAFE":
             text = (
                 f"I have a {verdict} assessment for this query, but couldn't "
                 "generate a fully verified explanation right now. Please "
@@ -414,7 +509,11 @@ class SynthesisAgent:
                 "location right now. Please try again shortly."
             )
         return ComposedResponse(
-            text=text, citations=[], map_payload=MapPayload(), trace=list(plan.trace)
+            text=text,
+            citations=[],
+            map_payload=MapPayload(),
+            trace=list(plan.trace),
+            verified=False,
         )
 
     def _build_llm_client(self):

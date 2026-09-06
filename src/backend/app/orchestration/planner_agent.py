@@ -48,6 +48,11 @@ _NO_MATCH_CONFIDENCE = 0.2
 # chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# Bound on the entity-extraction call (#133). Sized under graph's
+# AGENT_TIMEOUT_SECONDS: the planner runs before the specialists fan out, so
+# time spent here is time taken from every node after it.
+_LLM_TIMEOUT_S = 5.0
+
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
 translated to English text), extract:
@@ -287,7 +292,16 @@ class PlannerAgent:
         from google import genai
 
         settings = get_settings()
-        return genai.Client(api_key=settings.llm_api_key)
+        # #133: the SDK's default timeout is effectively unbounded for our
+        # purposes, and this is the one LLM call with no backstop above it —
+        # graph._planner_node calls plan() directly, not through _call_bounded,
+        # so nothing else would ever stop a stalled request. extract_entities()
+        # already treats any failure as "fall back to keyword matching", which
+        # is exactly the right response to a timeout.
+        return genai.Client(
+            api_key=settings.llm_api_key,
+            http_options={"timeout": int(_LLM_TIMEOUT_S * 1000)},  # milliseconds
+        )
 
     def _extract_via_keywords(self, query: NormalizedQuery) -> QueryEntities:
         """Degraded-mode fallback (LLD §6): no location resolution (there's no
