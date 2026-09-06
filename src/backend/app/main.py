@@ -25,6 +25,7 @@ import asyncio
 import base64
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,13 +37,22 @@ from app.core.config import get_settings
 from app.core.session import ConversationContext
 from app.language.bhashini_client import BhashiniClient, BhashiniUnavailableError
 from app.orchestration.graph import build_orchestration_graph
-from app.orchestration.planner_agent import NormalizedQuery
+from app.orchestration.planner_agent import NormalizedQuery, PlannerAgent
+from app.orchestration.synthesis_agent import SynthesisAgent
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ComposedResponse
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ORCA Gateway", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # _warm_llm_clients is defined further down (it needs _build_graph); this
+    # only resolves it when startup actually runs.
+    await _warm_llm_clients()
+    yield
+
+
+app = FastAPI(title="ORCA Gateway", version="0.1.0", lifespan=_lifespan)
 
 settings = get_settings()
 app.add_middleware(
@@ -242,6 +252,39 @@ def _build_graph():
     rebuilding per request" TODO in graph.run_query() should eventually be
     addressed, once that's worth the complexity."""
     return build_orchestration_graph()
+
+
+async def _warm_llm_clients() -> None:
+    """Pay the first-call costs before a user is waiting on them (#141).
+
+    The deployed Planner call 504'd on its 10s deadline while measuring 0.9s
+    against the same API from a laptop. The difference was cold start: that
+    query was the first on a 36-second-old container, and PlannerAgent /
+    SynthesisAgent both import google.genai *inside* _build_llm_client(), so
+    the first request pays a heavy package import plus client construction and
+    a TLS handshake — on a free instance sharing one core with the rest of the
+    graph. The user's query then spends its deadline on work that has nothing
+    to do with the model.
+
+    Deliberately best-effort: warming is an optimisation, and a Gateway that
+    refuses to boot because an LLM client could not be constructed is strictly
+    worse than one that serves a degraded first query. Every agent below
+    already degrades on its own (LLD §6).
+    """
+    try:
+        # Constructing the agents imports google.genai and builds the clients.
+        # Building the graph also pre-imports every agent module, so the first
+        # real query isn't doing it while the clock runs.
+        await asyncio.to_thread(_build_graph)
+        await asyncio.to_thread(PlannerAgent()._build_llm_client)
+        await asyncio.to_thread(SynthesisAgent()._build_llm_client)
+        logger.info("Gateway: LLM clients and graph warmed at startup (#141)")
+    except Exception as exc:  # noqa: BLE001 - warming must never block boot
+        logger.warning(
+            "Gateway: startup warm-up failed (%s) — first query will pay the "
+            "import cost instead",
+            exc,
+        )
 
 
 @app.post("/api/v1/session", response_model=SessionResponse)

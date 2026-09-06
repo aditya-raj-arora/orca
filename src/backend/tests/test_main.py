@@ -228,3 +228,44 @@ def test_unsafe_verdict_is_also_withheld_when_unexplained():
         "synthesis_ok": False,
     }
     assert _final_response(state, "en", None).verdict == "INSUFFICIENT_DATA"
+
+
+# --------------------------------------------------------------------------- #
+# #141 — warm the LLM clients at startup.
+#
+# The deployed Planner call 504'd on its deadline while measuring 0.9s against
+# the same API from a laptop. The query was the first on a 36-second-old
+# container, and both agents import google.genai INSIDE _build_llm_client(),
+# so it was paying for a package import on the user's clock.
+# --------------------------------------------------------------------------- #
+
+
+def test_startup_warms_the_llm_clients(monkeypatch):
+    """The import and client construction happen before anyone is waiting."""
+    warmed: list[str] = []
+
+    monkeypatch.setattr(gateway, "_build_graph", lambda: warmed.append("graph"))
+    monkeypatch.setattr(
+        gateway.PlannerAgent, "_build_llm_client", lambda self: warmed.append("planner")
+    )
+    monkeypatch.setattr(
+        gateway.SynthesisAgent, "_build_llm_client", lambda self: warmed.append("synthesis")
+    )
+
+    with TestClient(gateway.app):  # entering the context runs startup
+        pass
+
+    assert warmed == ["graph", "planner", "synthesis"]
+
+
+def test_startup_survives_a_failing_warm_up(monkeypatch):
+    """Warming is an optimisation. A Gateway that refuses to boot because an
+    LLM client couldn't be constructed is strictly worse than one that serves
+    a slower first query — every agent already degrades on its own (LLD §6)."""
+    def _explode(self):
+        raise RuntimeError("no API key in this environment")
+
+    monkeypatch.setattr(gateway.PlannerAgent, "_build_llm_client", _explode)
+
+    with TestClient(gateway.app) as client:
+        assert client.get("/healthz").status_code == 200
