@@ -41,6 +41,8 @@ from typing import Any
 
 import httpx
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT_S = 4.0          # per attempt; the weather sources run in parallel,
@@ -136,6 +138,29 @@ def _attempt_timeout(remaining: float) -> httpx.Timeout:
     return httpx.Timeout(connect=connect, read=budget - connect, write=connect, pool=connect)
 
 
+def proxy_for(source: str) -> str | None:
+    """The outbound proxy to use for `source`, or None to go out directly.
+
+    Open-Meteo meters its keyless tier per CLIENT IP and Render's free plan
+    shares one egress IP across the node, so the quota is spent by traffic we
+    neither generate nor can see — the 429s this module exists to survive. A
+    static egress IP (#151) makes the quota ours again.
+
+    Applied per source rather than globally on purpose: only Open-Meteo is
+    metered by IP. GDACS is a 1.5 MB feed and WeatherAPI is metered per key,
+    so routing either through a bandwidth-metered proxy spends the plan and
+    buys nothing.
+
+    The returned value carries credentials. Callers must not log it.
+    """
+    settings = get_settings()
+    proxy = (settings.outbound_proxy_url or "").strip()
+    if not proxy:
+        return None
+    prefixes = [p.strip() for p in settings.outbound_proxy_sources.split(",") if p.strip()]
+    return proxy if any(source.startswith(p) for p in prefixes) else None
+
+
 def get(source: str, url: str, **kwargs: Any) -> httpx.Response:
     """httpx.get hardened against transient upstream refusal.
 
@@ -149,6 +174,9 @@ def get(source: str, url: str, **kwargs: Any) -> httpx.Response:
     if cooling > 0:
         raise RateLimitedError(f"{source}: in 429 cooldown for another {cooling:.0f}s")
 
+    # None unless this source is configured to go via a static egress IP
+    # (#151). Never logged — it carries credentials.
+    proxy = proxy_for(source)
     deadline = time.monotonic() + SOURCE_BUDGET_S
     last_error: Exception | None = None
 
@@ -157,7 +185,9 @@ def get(source: str, url: str, **kwargs: Any) -> httpx.Response:
         if remaining <= 0:
             break
         try:
-            response = httpx.get(url, timeout=_attempt_timeout(remaining), **kwargs)
+            response = httpx.get(
+                url, timeout=_attempt_timeout(remaining), proxy=proxy, **kwargs
+            )
         except httpx.TransportError as exc:  # connect/read/write/pool errors
             logger.debug(
                 "%s: attempt %d/%d transport error: %s", source, attempt, MAX_ATTEMPTS, exc

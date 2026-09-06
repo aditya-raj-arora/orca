@@ -561,3 +561,78 @@ def test_key_on_a_free_host_warns_that_it_will_be_ignored(
         get_settings.cache_clear()
 
     assert any("customer-" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Static egress IP (#151) — the other way out of per-IP metering.
+#
+# Open-Meteo 429s on every query from Render's shared node IP. A proxy with a
+# static IP makes the quota ours again; the client-side policy above only ever
+# made us quiet about losing it.
+# --------------------------------------------------------------------------- #
+PROXY = "http://fixie:secret@velodrome.usefixie.com:80"
+
+
+@pytest.fixture()
+def _proxy_configured(monkeypatch: pytest.MonkeyPatch):
+    settings = wa.http_client.get_settings()
+    monkeypatch.setattr(settings, "outbound_proxy_url", PROXY, raising=False)
+    monkeypatch.setattr(settings, "outbound_proxy_sources", "open-meteo/", raising=False)
+    return settings
+
+
+def test_open_meteo_sources_go_through_the_proxy(_proxy_configured) -> None:
+    assert wa.http_client.proxy_for("open-meteo/forecast") == PROXY
+    assert wa.http_client.proxy_for("open-meteo/marine") == PROXY
+    assert wa.http_client.proxy_for("open-meteo/geocoding") == PROXY
+
+
+def test_unmetered_sources_do_not(_proxy_configured) -> None:
+    """GDACS is 1.5 MB per fetch and WeatherAPI is metered per key, not per IP.
+    Putting either on a bandwidth-metered proxy spends the plan for nothing."""
+    assert wa.http_client.proxy_for("gdacs/rss") is None
+    assert wa.http_client.proxy_for("weatherapi/alerts") is None
+
+
+def test_no_proxy_configured_changes_nothing() -> None:
+    """Unset is the default and must be a complete no-op."""
+    assert wa.http_client.proxy_for("open-meteo/forecast") is None
+
+
+def test_the_proxy_is_passed_to_httpx(
+    monkeypatch: pytest.MonkeyPatch, _proxy_configured
+) -> None:
+    """proxy_for() is worthless if get() doesn't hand it to httpx."""
+    seen: dict[str, object] = {}
+
+    def _capture(url, **kw):
+        seen["proxy"] = kw.get("proxy")
+        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", _capture)
+    wa.http_client.get("open-meteo/forecast", "https://api.open-meteo.com/v1/forecast")
+    assert seen["proxy"] == PROXY
+
+    wa.http_client.get("gdacs/rss", "https://www.gdacs.org/xml/rss.xml")
+    assert seen["proxy"] is None
+
+
+def test_the_proxy_credentials_never_reach_a_log_line(
+    monkeypatch: pytest.MonkeyPatch, _proxy_configured, caplog
+) -> None:
+    """The URL carries user:pass. A 429 and a transport error are the two paths
+    that log around a proxied call — neither may echo it."""
+    import logging
+
+    def _429(url, **_kw):
+        request = httpx.Request("GET", url)
+        return httpx.Response(429, request=request)
+
+    monkeypatch.setattr(httpx, "get", _429)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(httpx.HTTPStatusError):
+            wa.http_client.get("open-meteo/forecast", "https://api.open-meteo.com/v1/forecast")
+
+    assert caplog.text  # it did log something
+    assert "secret" not in caplog.text
+    assert PROXY not in caplog.text
