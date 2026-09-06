@@ -608,3 +608,93 @@ def test_the_apology_remains_when_there_is_nothing_to_compose_from():
 
     assert response.verified is False
     assert response.citations == []
+
+
+# --------------------------------------------------------------------------- #
+# #143 — cache successful compositions.
+#
+# The model misses often enough that an identical repeat question should not
+# re-roll the same dice. Two rules matter more than the caching: only SAFE
+# output is stored, and the fallback is never stored.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_identical_query_reuses_the_composition_without_calling_the_llm():
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
+    )
+    agent = SynthesisAgent(llm_client=fake_client)
+
+    first = agent.compose(_plan(), _caution_results(), language="en")
+    second = agent.compose(_plan(), _caution_results(), language="en")
+
+    assert fake_client.models.generate_content.call_count == 1
+    assert second.text == first.text
+    assert {c.source for c in second.citations} == {c.source for c in first.citations}
+
+
+def test_different_agent_data_is_not_served_from_the_cache():
+    """The key is the whole payload, including each agent's data_timestamp, so
+    a hit means the underlying data is genuinely unchanged — not merely a
+    similar-looking question. Getting this wrong would replay a stale verdict."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
+    )
+    agent = SynthesisAgent(llm_client=fake_client)
+
+    agent.compose(_plan(), _caution_results(), language="en")
+    changed = {
+        "risk_safety": RiskVerdict(
+            verdict="UNSAFE",  # different data -> must not reuse the CAUTION answer
+            rationale="Location is within a Marine Protected Area.",
+            contributing_factors=[],
+        ),
+    }
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "It is UNSAFE to fish here.", "source": "risk_safety"}]
+    )
+    second = agent.compose(_plan(), changed, language="en")
+
+    assert fake_client.models.generate_content.call_count == 2
+    assert "UNSAFE" in second.text
+
+
+def test_a_rejected_composition_is_never_cached():
+    """FR-SYN-2: output that failed the safety checks must not be stored, or a
+    cache hit would replay an uncited claim we already refused to ship."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Everything looks fine.", "source": "ocean"}]  # uncited source
+    )
+    agent = SynthesisAgent(llm_client=fake_client)
+
+    agent.compose(_plan(), _caution_results(), language="en")
+    fake_client.models.generate_content.reset_mock()
+    second = agent.compose(_plan(), _caution_results(), language="en")
+
+    # It tried again rather than replaying the rejected sentences.
+    assert fake_client.models.generate_content.call_count > 0
+    assert "Everything looks fine" not in second.text
+
+
+def test_the_fallback_is_never_cached():
+    """Caching a degraded answer would freeze a bad outcome for the whole TTL
+    and suppress the retry that might have succeeded. When the LLM recovers,
+    the next identical query must get the real composition."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError("gemini down")
+    agent = SynthesisAgent(llm_client=fake_client)
+
+    first = agent.compose(_plan(), _caution_results(), language="en")
+    assert first.verified is True  # deterministic composition (#139)
+
+    # The model comes back.
+    fake_client.models.generate_content.side_effect = None
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION today.", "source": "risk_safety"}]
+    )
+    second = agent.compose(_plan(), _caution_results(), language="en")
+
+    assert "Conditions are CAUTION today." in second.text

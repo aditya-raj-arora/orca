@@ -63,3 +63,20 @@ def _clear_http_cooldowns():
 
     http_client.reset_cooldowns()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_synthesis_sentence_cache():
+    """Fifth instance of the same hazard (#143): SynthesisAgent caches
+    successful compositions at module scope, keyed on the prompt payload, so
+    the cache survives the per-request agent instances the graph builds.
+
+    Without this, a test whose fixture produces the same agent outputs as an
+    earlier one is served that earlier composition and never calls its own
+    stubbed LLM at all — which is exactly how four call-count assertions in
+    tests/unit/test_synthesis_agent.py started failing the moment the cache
+    landed."""
+    from app.orchestration import synthesis_agent
+
+    synthesis_agent.reset_sentence_cache()
+    yield
