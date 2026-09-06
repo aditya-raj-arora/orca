@@ -300,3 +300,45 @@ def test_an_unknown_log_level_does_not_break_startup(monkeypatch):
 
     with TestClient(gateway.app) as client:
         assert client.get("/healthz").status_code == 200
+
+
+def test_startup_actually_emits_an_info_record(capsys):
+    """#145: the real assertion. #144 set the logger's level and changed
+    nothing on the deployed instance, because a level only decides which
+    records a logger CREATES — emitting them is a handler's job, and under
+    uvicorn the root logger has none, so everything went to
+    logging.lastResort, which is pinned at WARNING.
+
+    test_startup_applies_the_configured_log_level passes against that broken
+    state, which is exactly why it did not catch it. Assert the OUTPUT."""
+    import logging
+
+    # Drop any handler a previous test's startup installed: it holds the
+    # stderr from back then, not the one capsys is capturing now.
+    app_logger = logging.getLogger("app")
+    for handler in list(app_logger.handlers):
+        if getattr(handler, gateway._ORCA_HANDLER_FLAG, False):
+            app_logger.removeHandler(handler)
+
+    with TestClient(gateway.app):
+        logging.getLogger("app.orchestration.synthesis_agent").info("info-line-marker")
+
+    assert "info-line-marker" in capsys.readouterr().err
+
+
+def test_the_log_handler_is_not_installed_twice(capsys):
+    """Startup runs many times across this suite and once per process in
+    production. A second handler would double every line."""
+    import logging
+
+    app_logger = logging.getLogger("app")
+    for handler in list(app_logger.handlers):
+        if getattr(handler, gateway._ORCA_HANDLER_FLAG, False):
+            app_logger.removeHandler(handler)
+
+    with TestClient(gateway.app):
+        pass
+    with TestClient(gateway.app):
+        logging.getLogger("app.orchestration.graph").info("once-only-marker")
+
+    assert capsys.readouterr().err.count("once-only-marker") == 1
