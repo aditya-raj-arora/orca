@@ -129,8 +129,16 @@ async def _call_bounded(
         result = await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         return result, f"{agent_label}: data received"
     except TimeoutError:
+        logger.warning("%s: timed out after %ss — treated as unavailable", agent_label, timeout)
         return unavailable, f"{agent_label}: timed out after {timeout}s (unavailable)"
     except Exception as exc:  # noqa: BLE001 - deliberate: degrade, don't crash the query
+        # #129: this used to be silent server-side — the failure only ever
+        # reached the client's Agent Trace panel via the trace_line below, so
+        # a real production error (e.g. Synthesis's Gemini call blowing up)
+        # left zero trace in Render logs. exc_info=exc keeps the full
+        # traceback, not just str(exc), so a KeyError/AttributeError from a
+        # code bug is as diagnosable as an upstream HTTP failure.
+        logger.error("%s: error — treated as unavailable", agent_label, exc_info=exc)
         return unavailable, f"{agent_label}: error ({exc}) — treated as unavailable"
 
 

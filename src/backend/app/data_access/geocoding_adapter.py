@@ -174,4 +174,5 @@ def _as_float(v: Any) -> float | None:
     try:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
+        logger.debug("_as_float: non-numeric value %r", v)
         return None
