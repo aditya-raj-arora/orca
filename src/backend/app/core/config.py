@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     # setting it.
     open_meteo_api_key: str = ""
 
+    # The other way out of IP metering (#151): route the metered calls through
+    # a static egress IP (e.g. Fixie) so the quota is measured against an
+    # address only we use, instead of Render's shared node IP. Unset, nothing
+    # changes and every call goes out directly.
+    #
+    # CONTAINS CREDENTIALS (http://user:pass@host:port) — env only, never
+    # committed, and never logged. data_access/http_client.py is careful not
+    # to put it in a message; keep it that way.
+    #
+    # Deliberately scoped to a source prefix rather than applied to all
+    # outbound traffic: only Open-Meteo is metered per client IP. GDACS is a
+    # 1.5 MB feed and WeatherAPI is metered per key, so putting either on a
+    # bandwidth-metered proxy spends the plan for no benefit.
+    outbound_proxy_url: str = ""
+    outbound_proxy_sources: str = "open-meteo/"
+
     incois_base_url: str = "https://incois.gov.in"
     incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"
     incois_pfz_wfs_url: str = "https://incois.gov.in/geoserver/PFZ_Automation/ows"

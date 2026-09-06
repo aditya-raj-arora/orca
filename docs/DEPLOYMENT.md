@@ -79,6 +79,13 @@ provision a `databases:` resource — `DATABASE_URL` is set manually on
      nothing unless the three Open-Meteo base URLs are moved to the
      `customer-` hosts at the same time.
 
+   - `OUTBOUND_PROXY_URL` — **optional, paid.** A static-egress proxy (e.g.
+     Fixie) for the Open-Meteo calls only, so their per-IP quota is measured
+     against an address only we use rather than Render's shared node IP. Read
+     "Open-Meteo 429s on Render" under **Known risks** before setting it —
+     including the warning about shared vs dedicated IPs. Contains credentials:
+     secret, never committed.
+
    Everything else the backend needs is a non-secret `value:` in `render.yaml`
    (base URLs, `WEATHER_CACHE_TTL_SECONDS`, `GEOCODING_COUNTRY_CODE`, ...) and
    is created with the service automatically — nothing to type in by hand.
@@ -149,9 +156,28 @@ steps.
      `WEATHER_FORECAST_BASE_URL=https://customer-api.open-meteo.com/v1`,
      `MARINE_API_BASE_URL=https://customer-marine-api.open-meteo.com/v1`,
      `GEOCODING_BASE_URL=https://customer-geocoding-api.open-meteo.com/v1`.
-  2. **Route egress through a static IP** (Render paid plans, or a proxy add-on).
-     Cheaper than a weather plan but buys a *private* free-tier quota, not a
-     bigger one — fine for demo volume, still breakable by our own bursts.
+  2. **Route egress through a static IP** — supported directly since #151. Sign
+     up for a static-egress proxy (Fixie, or a Render paid plan's static
+     outbound IP) and set one variable on `orca-backend`:
+
+     `OUTBOUND_PROXY_URL=http://user:pass@your-proxy-host:port`
+
+     Only the `open-meteo/*` calls go through it. GDACS is a 1.5 MB feed per
+     fetch and WeatherAPI is metered per key rather than per IP, so neither
+     belongs on a bandwidth-metered proxy — override `OUTBOUND_PROXY_SOURCES`
+     (comma-separated source prefixes, default `open-meteo/`) only if that
+     changes. Unset, nothing is proxied and behaviour is exactly as today.
+
+     The URL contains credentials: it is a Render **secret** env var, never
+     committed, and `http_client.py` is deliberately written not to log it.
+
+     Two caveats worth knowing before paying:
+     - **Confirm the plan gives a _dedicated_ IP, not a shared pool.** A pool
+       shared with the provider's other customers recreates the exact problem
+       we are escaping — someone else's traffic exhausting a quota measured
+       against an address we share — just with different neighbours.
+     - This buys a *private* free-tier quota, not a bigger one. Fine for demo
+       volume, still breakable by our own bursts.
   3. **Self-host Open-Meteo** — it is open source. No quota at all, but it wants
      a disk full of model data and is not a demo-week project.
 
