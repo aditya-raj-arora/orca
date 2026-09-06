@@ -68,7 +68,11 @@ AGENT_TIMEOUT_SECONDS = 6.0
 # 6s is correct for the specialists, and loosening it would let one slow
 # external API eat the whole query budget, which is precisely what that
 # constant exists to prevent.
-SYNTHESIS_TIMEOUT_SECONDS = 10.0
+# Raised from 10.0 to clear Gemini's minimum request deadline (#135): the API
+# refuses a deadline under 10s, so a single call may legitimately run that long,
+# and a 10s backstop would kill compose() on the very call it was budgeted for —
+# discarding the degraded-but-useful response #133 exists to return.
+SYNTHESIS_TIMEOUT_SECONDS = 12.0
 
 # Weather gets its own budget too (#131), for the same reason Synthesis does:
 # AGENT_TIMEOUT_SECONDS is sized for a specialist making ONE bounded HTTP call,

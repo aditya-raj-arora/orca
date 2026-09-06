@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 from app.orchestration.synthesis_agent import (
     _BUDGET_RESERVE_S,
+    _MIN_API_DEADLINE_S,
     _MIN_CALL_BUDGET_S,
     SynthesisAgent,
 )
@@ -289,13 +290,42 @@ def test_generation_is_bounded_by_the_remaining_budget():
         [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
     )
 
-    SynthesisAgent(llm_client=fake_client, budget_s=9.0).compose(
+    SynthesisAgent(llm_client=fake_client, budget_s=20.0).compose(
         _plan(), _caution_results(), language="en"
     )
 
     config = fake_client.models.generate_content.call_args.kwargs["config"]
     timeout_ms = config["http_options"]["timeout"]
-    assert 0 < timeout_ms <= 9.0 * 1000  # milliseconds, per HttpOptions.timeout
+    assert 0 < timeout_ms <= 20.0 * 1000  # milliseconds, per HttpOptions.timeout
+
+
+def test_deadline_is_never_sent_below_the_api_minimum():
+    """#135: HttpOptions.timeout is a SERVER-side deadline and Gemini 400s
+    anything under 10s ("Manually set deadline 5s is too short"). #134 shipped
+    8.5s here and every call failed instantly in production — invisible to the
+    suite because every test mocks the client, so the API never validated it.
+
+    Small budgets must clamp UP to the minimum: the deadline is a ceiling, not
+    a reservation, and a call that answers in 2s still answers in 2s."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Conditions are CAUTION.", "source": "risk_safety"}]
+    )
+
+    SynthesisAgent(llm_client=fake_client, budget_s=_MIN_CALL_BUDGET_S + 1.0).compose(
+        _plan(), _caution_results(), language="en"
+    )
+
+    config = fake_client.models.generate_content.call_args.kwargs["config"]
+    assert config["http_options"]["timeout"] >= _MIN_API_DEADLINE_S * 1000
+
+
+def test_planner_deadline_is_never_sent_below_the_api_minimum():
+    """Same 400, other call site — this is the one that actually broke the
+    deployed query, sending well-formed input down the keyword fallback."""
+    from app.orchestration.planner_agent import _LLM_TIMEOUT_S
+
+    assert _LLM_TIMEOUT_S >= _MIN_API_DEADLINE_S
 
 
 def test_no_budget_left_returns_the_verdict_instead_of_calling_the_llm():

@@ -48,10 +48,12 @@ _NO_MATCH_CONFIDENCE = 0.2
 # chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
 
-# Bound on the entity-extraction call (#133). Sized under graph's
-# AGENT_TIMEOUT_SECONDS: the planner runs before the specialists fan out, so
-# time spent here is time taken from every node after it.
-_LLM_TIMEOUT_S = 5.0
+# Bound on the entity-extraction call (#133). This is a server-side deadline
+# and Gemini rejects anything under 10s with a 400 (#135) — #134 set it to 5s,
+# which made every extraction fail instantly and sent well-formed queries down
+# the keyword fallback into a clarifying question. 10s is the floor the API
+# allows, not a preference; it cannot be tuned below that here.
+_LLM_TIMEOUT_S = 10.0
 
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
