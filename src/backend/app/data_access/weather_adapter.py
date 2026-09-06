@@ -380,7 +380,8 @@ def _parse_gdacs_tc(rss_text: str, lat: float, lon: float) -> list[dict[str, Any
     out: list[dict[str, Any]] = []
     try:
         root = ET.fromstring(rss_text)
-    except ET.ParseError:
+    except ET.ParseError as exc:
+        logger.warning("_parse_gdacs_tc: unparseable GDACS RSS feed: %s", exc)
         return out
     for item in root.iterfind(".//item"):
         etype = item.findtext("gdacs:eventtype", default="", namespaces=_GDACS_NS)
@@ -392,6 +393,7 @@ def _parse_gdacs_tc(rss_text: str, lat: float, lon: float) -> list[dict[str, Any
         try:
             dist = _rough_haversine_km(lat, lon, float(ilat), float(ilon))
         except ValueError:
+            logger.debug("_parse_gdacs_tc: non-numeric GDACS item coordinates %r/%r", ilat, ilon)
             continue
         if dist > _GDACS_TC_RADIUS_KM:
             continue
@@ -522,6 +524,7 @@ def _as_float(v: Any) -> float | None:
     try:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
+        logger.debug("_as_float: non-numeric value %r", v)
         return None
 
 
@@ -540,4 +543,5 @@ def _as_epoch(v: Any) -> int | None:
             s += "+00:00"
         return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
     except ValueError:
+        logger.debug("_as_epoch: unparseable timestamp value %r", v)
         return None

@@ -85,6 +85,6 @@ def _timestamp(data: dict, fallback: datetime) -> datetime:
     if epoch is not None:
         try:
             return datetime.fromtimestamp(int(epoch), tz=UTC)
-        except (TypeError, ValueError, OSError):
-            pass
+        except (TypeError, ValueError, OSError) as exc:
+            logger.debug("_timestamp: bad data_time_epoch %r (%s)", epoch, exc)
     return fallback

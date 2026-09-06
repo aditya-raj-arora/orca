@@ -199,6 +199,7 @@ def _gray_index_value(raw: Any) -> float | None:
     try:
         v = float(raw)
     except (TypeError, ValueError):
+        logger.debug("_gray_index_value: non-numeric GRAY_INDEX %r", raw)
         return None
     if v == -1.0 or v <= _NODATA_THRESHOLD:
         return None
@@ -253,7 +254,8 @@ def _advisory_date_from_props(props: dict[str, Any]) -> datetime | None:
     try:
         year = int(props["Year"])
         jd = int(props["Julian_day"])
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.debug("_advisory_date_from_props: missing/bad Year or Julian_day (%s)", exc)
         return None
     if not (1 <= jd <= 366):
         return None

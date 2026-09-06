@@ -147,6 +147,7 @@ async def _normalize_query(body: QueryRequest) -> NormalizedQuery:
             transcript = await asyncio.to_thread(BhashiniClient().transcribe, audio_bytes)
             return NormalizedQuery(text=transcript.text, language=transcript.language_code)
         except Exception as exc:  # noqa: BLE001 - FR-LANG-6: degrade, don't crash the socket
+            logger.warning("Speech-to-text unavailable (%s)", exc)
             raise BhashiniUnavailableError(str(exc)) from exc
 
     text = body.text or ""
@@ -261,14 +262,16 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
         raw = await websocket.receive_json()
     except WebSocketDisconnect:
         return
-    except Exception:  # noqa: BLE001 - malformed frame, not a crash
+    except Exception as exc:  # noqa: BLE001 - malformed frame, not a crash
+        logger.warning("query_socket: malformed frame on receive_json: %s", exc)
         await websocket.send_json({"type": "error", "message": "Malformed query message."})
         await websocket.close()
         return
 
     try:
         body = QueryRequest(**{k: v for k, v in raw.items() if k != "type"})
-    except Exception:  # noqa: BLE001 - bad payload shape, not a crash
+    except Exception as exc:  # noqa: BLE001 - bad payload shape, not a crash
+        logger.warning("query_socket: bad QueryRequest payload shape: %s", exc)
         await websocket.send_json({"type": "error", "message": "Malformed query message."})
         await websocket.close()
         return
@@ -294,26 +297,44 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
     }
 
     state: dict[str, Any] = {}
-    async for update in compiled.astream(initial_state, stream_mode="updates"):
-        for node in _GRAPH_NODES:
-            payload = update.get(node)
-            if not payload:
-                continue
-            for key, value in payload.items():
-                if key == "trace":
+    try:
+        async for update in compiled.astream(initial_state, stream_mode="updates"):
+            for node in _GRAPH_NODES:
+                payload = update.get(node)
+                if not payload:
                     continue
-                if key == "results":
-                    state["results"] = {**state.get("results", {}), **value}
-                else:
-                    state[key] = value
-            for line in payload.get("trace", []):
-                await websocket.send_json({"type": "trace_update", "step": line})
+                for key, value in payload.items():
+                    if key == "trace":
+                        continue
+                    if key == "results":
+                        state["results"] = {**state.get("results", {}), **value}
+                    else:
+                        state[key] = value
+                for line in payload.get("trace", []):
+                    await websocket.send_json({"type": "trace_update", "step": line})
 
-    composed_text = state["composed"].text if state.get("composed") else ""
-    audio_b64 = await _synthesize_audio(composed_text, query.language, body.mode)
-    response = _final_response(state, query.language, audio_b64)
-    await websocket.send_json({"type": "final_response", **response.model_dump()})
-    await websocket.close()
+        composed_text = state["composed"].text if state.get("composed") else ""
+        audio_b64 = await _synthesize_audio(composed_text, query.language, body.mode)
+        response = _final_response(state, query.language, audio_b64)
+        await websocket.send_json({"type": "final_response", **response.model_dump()})
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001 - #129: every node already degrades
+        # (see graph.py's _call_bounded); reaching here means an actual bug
+        # in the wiring above it (main.py itself), not an agent/LLM failure.
+        # That must not vanish as an unexplained dropped connection.
+        logger.error("query_socket: unhandled error building the response", exc_info=exc)
+        try:
+            await websocket.send_json(
+                {"type": "error", "message": "Something went wrong processing that query."}
+            )
+        except Exception:  # noqa: BLE001 - socket may already be unusable
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001 - already closed/disconnected, nothing to do
+            pass
 
 
 @app.post("/api/v1/query/{session_id}", response_model=QueryResponse)

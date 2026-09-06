@@ -107,6 +107,7 @@ def retry_after_s(response: httpx.Response) -> float | None:
     try:
         return max(0.0, float(raw.strip()))
     except ValueError:
+        logger.debug("retry_after_s: non-numeric Retry-After header %r", raw)
         return None
 
 
@@ -133,6 +134,9 @@ def get(source: str, url: str, **kwargs: Any) -> httpx.Response:
         try:
             response = httpx.get(url, timeout=min(HTTP_TIMEOUT_S, remaining), **kwargs)
         except httpx.TransportError as exc:  # connect/read/write/pool errors
+            logger.debug(
+                "%s: attempt %d/%d transport error: %s", source, attempt, MAX_ATTEMPTS, exc
+            )
             last_error = exc
         else:
             if response.status_code == 429:
