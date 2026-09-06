@@ -125,6 +125,18 @@ _MIN_API_DEADLINE_S = 10.0
 # in compose() says so.
 _THINKING_LEVEL = "LOW"
 
+# One client, and therefore one connection pool, for every SynthesisAgent
+# instance (#149) — see _build_llm_client().
+_SHARED_LLM_CLIENT: Any = None
+_SHARED_LLM_CLIENT_LOCK = threading.Lock()
+
+
+def reset_shared_llm_client() -> None:
+    """Test hook (see tests/conftest.py). Not used in production code."""
+    global _SHARED_LLM_CLIENT
+    with _SHARED_LLM_CLIENT_LOCK:
+        _SHARED_LLM_CLIENT = None
+
 _SYNTHESIS_SYSTEM_PROMPT = """You are the response-composition step of a marine \
 safety assistant. You will be given the outputs of one or more specialist \
 agents (weather, ocean, ocean_params, geofencing, risk_safety) as JSON, plus \
@@ -862,6 +874,18 @@ class SynthesisAgent:
         )
 
     def _build_llm_client(self):
+        """Shared across every SynthesisAgent instance (#149) — same reason as
+        PlannerAgent's: the graph default-constructs a fresh agent per build,
+        so a per-instance client meant a new httpx connection pool, and a fresh
+        DNS + TCP + TLS handshake, on every query."""
+        global _SHARED_LLM_CLIENT
+        with _SHARED_LLM_CLIENT_LOCK:
+            if _SHARED_LLM_CLIENT is not None:
+                return _SHARED_LLM_CLIENT
+            _SHARED_LLM_CLIENT = self._construct_llm_client()
+            return _SHARED_LLM_CLIENT
+
+    def _construct_llm_client(self):
         from google import genai
 
         settings = get_settings()
