@@ -36,6 +36,8 @@ function toMarker(raw: unknown, index: number): MarkerData | null {
     lat: raw.lat,
     lng: raw.lng,
     label: typeof raw.label === "string" ? raw.label : "Queried location",
+    isViolation: raw.isViolation === true,
+    isProximity: raw.isProximity === true,
   };
 }
 
