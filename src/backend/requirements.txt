@@ -34,7 +34,7 @@ geoalchemy2>=0.20.0
 psycopg[binary]>=3.3.5
 
 # Dev / CI tooling
-ruff>=0.6
+ruff>=0.16.6
 pytest>=8.3
 pytest-asyncio>=1.4.0
 httpx>=0.28.1  # also used as the FastAPI test client transport
