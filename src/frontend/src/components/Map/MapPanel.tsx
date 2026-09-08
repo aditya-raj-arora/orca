@@ -17,6 +17,8 @@ export interface MarkerData {
   lat: number;
   lng: number;
   label: string;
+  isViolation?: boolean;
+  isProximity?: boolean;
 }
 
 export interface ZoneData {
@@ -45,6 +47,17 @@ export default function MapPanel({
   oceanError = false,
   geofenceError = false
 }: MapPanelProps) {
+  const getMarkerIcon = (marker: MarkerData) => {
+    if (!marker.isViolation && !marker.isProximity) return undefined; // default pin
+    const color = marker.isViolation ? "#dc2626" : "#f59e0b";
+    return L.divIcon({
+      className: "",
+      html: `<span style="display:block;width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 0 2px rgba(0,0,0,0.6);"></span>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    });
+  };
+
   const getZoneStyle = (zone: ZoneData) => {
     if (zone.isViolation) {
       return {
@@ -114,8 +127,22 @@ export default function MapPanel({
         />
 
         {markers.map((marker) => (
-          <Marker key={marker.id} position={[marker.lat, marker.lng]}>
-            <Popup>{marker.label}</Popup>
+          <Marker
+            key={marker.id}
+            position={[marker.lat, marker.lng]}
+            icon={getMarkerIcon(marker)}
+          >
+            <Popup>
+              <div>
+                {marker.label}
+                {marker.isViolation && (
+                  <span style={{ color: "red", display: "block" }}>Status: Violation Detected</span>
+                )}
+                {marker.isProximity && (
+                  <span style={{ color: "orange", display: "block" }}>Status: Proximity Warning</span>
+                )}
+              </div>
+            </Popup>
           </Marker>
         ))}
 
