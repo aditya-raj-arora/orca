@@ -27,7 +27,9 @@ describe("normalizeMapPayload", () => {
   it("reads markers and zones out of a final_response map_payload", () => {
     const { markers, zones } = normalizeMapPayload(MAP_PAYLOAD);
 
-    expect(markers).toEqual([{ id: "m1", lat: 10.0, lng: 76.3, label: "Queried Location" }]);
+    expect(markers).toEqual([
+      { id: "m1", lat: 10.0, lng: 76.3, label: "Queried Location", isViolation: false, isProximity: false },
+    ]);
     expect(zones).toHaveLength(1);
     expect(zones[0]).toMatchObject({ id: "pfz-1", label: "Nearest PFZ", zoneType: "PFZ" });
     expect(zones[0].coordinates).toHaveLength(3);
@@ -43,6 +45,18 @@ describe("normalizeMapPayload", () => {
 
     expect(zones[0]).toMatchObject({ zoneType: "MPA", isViolation: true, isProximity: false });
     expect(zones[1]).toMatchObject({ zoneType: "IMBL", isViolation: false, isProximity: true });
+  });
+
+  it("keeps a marker's violation / proximity flags too (#163 map markers)", () => {
+    const { markers } = normalizeMapPayload({
+      markers: [
+        { id: "geofence-violation", lat: 9.0, lng: 79.1, label: "Violation", isViolation: true },
+        { id: "geofence-proximity", lat: 9.1, lng: 79.2, label: "Proximity", isProximity: true },
+      ],
+    });
+
+    expect(markers[0]).toMatchObject({ isViolation: true, isProximity: false });
+    expect(markers[1]).toMatchObject({ isViolation: false, isProximity: true });
   });
 
   it("returns empty arrays for an absent or empty payload rather than inventing geometry", () => {
@@ -69,7 +83,9 @@ describe("normalizeMapPayload", () => {
       ],
     });
 
-    expect(markers).toEqual([{ id: "ok", lat: 1, lng: 2, label: "fine" }]);
+    expect(markers).toEqual([
+      { id: "ok", lat: 1, lng: 2, label: "fine", isViolation: false, isProximity: false },
+    ]);
     expect(zones).toEqual([]);
   });
 });
