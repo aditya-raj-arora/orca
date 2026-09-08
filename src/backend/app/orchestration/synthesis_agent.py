@@ -35,10 +35,43 @@ None entries from the prompt/citations entirely, not describe them as data.
 follows the WeatherResult convention instead — always a real OceanParams
 object, unavailability represented by None fields, not a None entry.
 
-MODEL NOTE: uses gemini-3.6-flash, not gemini-2.5-flash (retired for new
-API keys — see Issue #<N>, also affects planner_agent.py). No `temperature`
-param passed — Gemini 3.x migration notes say sampling params are
-unsupported on 3.x models.
+MODEL NOTE: uses gemini-3.5-flash-lite (#168), not gemini-3.6-flash (the
+original choice) or gemini-2.5-flash (retired for new API keys — see Issue
+#<N>, also affects planner_agent.py). Measured against the real API with the
+real prompt, 5 runs each, scored against this file's OWN safety gates rather
+than approximated:
+
+    gemini-3.6-flash + LOW (as shipped)   median 24.2s   max 27.5s   5/5 passed
+    gemini-3.5-flash-lite                 median  1.7s   max  1.7s   5/5 passed
+    gemini-3.5-flash-lite + LOW           median  1.5s   max  1.7s   5/5 passed
+    gemini-3.5-flash                      median  8.0s   max  9.9s   5/5 passed
+    gemini-3.5-flash + LOW                429 RESOURCE_EXHAUSTED
+
+~15-16x faster, zero variance across 5 runs, and the SAME model
+PlannerAgent already uses (planner_agent.py picked it "for its higher
+free-tier RPM/RPD" — this run independently confirmed that: the flash/flash
+tier ran out of quota partway through the five-candidate experiment while
+flash-lite was untouched). Synthesis had been on the tighter tier the whole
+time. The 24.2s baseline here is itself informative, not just a large gap
+from #137's earlier 3.4s measurement — most likely the same quota
+contention, since it ran first in the experiment — which argues for the
+swap rather than against measuring it: the old model degrades badly under
+exactly the load a real demo produces, and flash-lite did not move.
+
+_THINKING_LEVEL is still applied (harmless no-op here — flash-lite reports
+no thought tokens either with or without it, matching planner_agent.py's
+#141 finding for the same model) rather than branched per model, so a
+future swap back to a thinking-capable model keeps the cap by default
+instead of it being silently missing.
+
+Not measured: prose fluency. The safety gates check structure and phrasing,
+not quality — but #139/#140 mean a fluency regression ships a working,
+cited answer rather than a broken one, which is a real backstop rather than
+a reason to skip checking real output before calling this done.
+
+No `temperature` param passed — Gemini 3.x migration notes say sampling
+params are unsupported on 3.x models. (flash-lite is on 3.5, kept for
+consistency with the rest of this file's config; harmless if unsupported.)
 """
 from __future__ import annotations
 
@@ -58,7 +91,7 @@ from app.schemas.synthesis import ComposedResponse, ExecutionPlan, MapPayload
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_MODEL = "gemini-3.6-flash"
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # --- compose()'s own budget (#133) --------------------------------------- #
 # Nothing used to bound a single generate_content call: the client was built
@@ -99,9 +132,17 @@ _MIN_CALL_BUDGET_S = 2.0
 # using its full deadline gets killed before compose() can degrade gracefully.
 _MIN_API_DEADLINE_S = 10.0
 
-# Gemini 3.x thinks before it answers, and on this call it thinks far more than
-# it writes — 1185 thought tokens against 260 output tokens. Measured on the
-# real API with this exact prompt, 3 runs each (#137):
+# HISTORICAL (#137) — measured against gemini-3.6-flash, the model this file
+# used at the time. Kept for the reasoning trail: it is why _THINKING_LEVEL
+# exists at all and why it defaults to LOW rather than being unset. #168
+# swapped the model to gemini-3.5-flash-lite, which reports NO thought tokens
+# with or without this setting (same finding planner_agent.py already made
+# for the same model, #141) — so none of the numbers below describe current
+# behaviour, only the problem LOW was built to solve.
+#
+# Gemini 3.x thinks before it answers, and on this call it thought far more
+# than it wrote — 1185 thought tokens against 260 output tokens. Measured on
+# the real API with this exact prompt, 3 runs each (#137):
 #
 #   as shipped (no thinking_config)   min 5.7s   median 9.8s   max 11.2s
 #   thinking_budget=0                 400 INVALID_ARGUMENT — rejected outright
