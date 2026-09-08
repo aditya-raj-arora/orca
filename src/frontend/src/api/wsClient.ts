@@ -22,7 +22,12 @@ export type ServerFinalResponse = {
   text: string;
   language: string;
   audio_base64?: string;
-  verdict: "SAFE" | "CAUTION" | "UNSAFE" | "INSUFFICIENT_DATA";
+  // null = no verdict was requested (#126: an informational-only query, e.g.
+  // plain weather, never invokes Risk/Safety) — distinct from
+  // "INSUFFICIENT_DATA", which means Risk/Safety WAS asked and couldn't
+  // reach one. ChatPanel's `{m.verdict && (...)}` guard already treats null
+  // the same as "no badge", so this needed no rendering-logic change.
+  verdict: "SAFE" | "CAUTION" | "UNSAFE" | "INSUFFICIENT_DATA" | null;
   citations: { source: string; timestamp: string }[];
   map_payload: { markers: unknown[]; zones: unknown[] };
 };
