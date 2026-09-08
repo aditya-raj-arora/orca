@@ -17,9 +17,11 @@ from app.orchestration.synthesis_agent import (
     _THINKING_LEVEL,
     SynthesisAgent,
 )
+from app.schemas.common import LatLon
 from app.schemas.geofence import GeofenceResult
+from app.schemas.ocean import PFZResult
 from app.schemas.risk import RiskVerdict
-from app.schemas.synthesis import ExecutionPlan
+from app.schemas.synthesis import AgentInvocationRequest, ExecutionPlan
 from app.schemas.weather import WeatherResult
 
 
@@ -153,6 +155,22 @@ def _unsafe_results() -> dict:
 def _plan() -> ExecutionPlan:
     return ExecutionPlan(trace=["Planner: invoked weather, risk_safety"])
 
+
+def _plan_with_location(
+    lat: float = 9.9312, lon: float = 76.2673, place_name: str = "Kochi"
+) -> ExecutionPlan:
+    """Same as _plan(), but with a resolved location in invocations — the
+    shape _queried_location() (synthesis_agent.py) reads, matching how
+    planner_agent.route_query() actually populates input_payload."""
+    return ExecutionPlan(
+        invocations=[
+            AgentInvocationRequest(
+                agent_name="weather",
+                input_payload={"location": {"place_name": place_name, "lat": lat, "lon": lon}},
+            ),
+        ],
+        trace=["Planner: invoked weather, risk_safety"],
+    )
 
 def test_unsafe_verdict_softened_by_llm_is_rejected():
     """The exact failure #39 exists to prevent: calm weather is real, but it
@@ -698,3 +716,133 @@ def test_the_fallback_is_never_cached():
     second = agent.compose(_plan(), _caution_results(), language="en")
 
     assert "Conditions are CAUTION today." in second.text
+
+
+
+def test_map_payload_pfz_only():
+    """PFZResult present, geofencing absent -> queried-location marker +
+    nearest-PFZ marker, no geofence-related marker, zones stays empty (no
+    dataclass here carries polygon geometry — see _build_map_payload
+    docstring)."""
+    results = _full_results(
+        geofencing=None,
+        ocean=PFZResult(
+            centroid=LatLon(lat=9.85, lon=76.30),
+            distance_km=12.4,
+            bearing_deg=45.0,
+            data_timestamp=datetime(2026, 9, 6, 17, 21, tzinfo=UTC),
+            is_stale=False,
+        ),
+    )
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan_with_location(), results, language="en"
+    )
+
+    marker_ids = {m["id"] for m in response.map_payload.markers}
+    assert "queried-location" in marker_ids
+    assert "nearest-pfz" in marker_ids
+    assert "geofence-violation" not in marker_ids
+    assert "geofence-proximity" not in marker_ids
+    assert response.map_payload.zones == []
+
+    pfz_marker = next(m for m in response.map_payload.markers if m["id"] == "nearest-pfz")
+    assert pfz_marker["lat"] == 9.85
+    assert pfz_marker["lng"] == 76.30
+
+
+def test_map_payload_geofence_only():
+    """GeofenceResult present (violation), ocean/PFZ absent -> queried-location
+    marker + geofence-violation marker, styled with isViolation, no PFZ
+    marker."""
+    results = _full_results(
+        ocean=None,
+        geofencing=GeofenceResult(
+            within_imbl_buffer=False,
+            imbl_distance_km=180.0,
+            within_mpa=True,
+            mpa_name="Gulf of Mannar",
+        ),
+    )
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan_with_location(), results, language="en"
+    )
+
+    marker_ids = {m["id"] for m in response.map_payload.markers}
+    assert "queried-location" in marker_ids
+    assert "geofence-violation" in marker_ids
+    assert "nearest-pfz" not in marker_ids
+
+    violation_marker = next(
+        m for m in response.map_payload.markers if m["id"] == "geofence-violation"
+    )
+    assert violation_marker["isViolation"] is True
+    assert "Gulf of Mannar" in violation_marker["label"]
+
+
+def test_map_payload_both_pfz_and_geofence():
+    """Both PFZResult and a geofence proximity (not violation) present ->
+    all three markers show up: queried-location, nearest-pfz, and
+    geofence-proximity (not geofence-violation, since within_mpa/
+    within_imbl_buffer are both False here)."""
+    results = _full_results(
+        ocean=PFZResult(
+            centroid=LatLon(lat=9.80, lon=76.25),
+            distance_km=8.1,
+            bearing_deg=200.0,
+            data_timestamp=datetime(2026, 9, 6, 17, 21, tzinfo=UTC),
+            is_stale=True,
+        ),
+        geofencing=GeofenceResult(
+            within_imbl_buffer=False,
+            imbl_distance_km=42.7,
+            within_mpa=False,
+        ),
+    )
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan_with_location(), results, language="en"
+    )
+
+    marker_ids = {m["id"] for m in response.map_payload.markers}
+    assert marker_ids == {"queried-location", "nearest-pfz", "geofence-proximity"}
+
+    pfz_marker = next(m for m in response.map_payload.markers if m["id"] == "nearest-pfz")
+    assert "stale" in pfz_marker["label"].lower()
+
+    proximity_marker = next(
+        m for m in response.map_payload.markers if m["id"] == "geofence-proximity"
+    )
+    assert proximity_marker["isProximity"] is True
+    assert "42.7" in proximity_marker["label"]
+
+
+def test_map_payload_neither_pfz_nor_geofence_current_behavior_preserved():
+    """Neither PFZResult nor GeofenceResult present -> only the
+    queried-location marker (if a location was resolved), zones always
+    empty. This is the pre-#68 baseline behavior and must not regress."""
+    results = _full_results(ocean=None, geofencing=None)
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan_with_location(), results, language="en"
+    )
+
+    marker_ids = {m["id"] for m in response.map_payload.markers}
+    assert marker_ids == {"queried-location"}
+    assert response.map_payload.zones == []
+
+
+def test_map_payload_no_location_resolved_yields_no_queried_location_marker():
+    """If the plan never resolved a location (e.g. an informational-only
+    query with no invocations), _queried_location() returns None and no
+    queried-location marker is added — must not crash."""
+    results = _full_results(ocean=None, geofencing=None)
+
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        _plan(), results, language="en"  # _plan(), not _plan_with_location()
+    )
+
+    marker_ids = {m["id"] for m in response.map_payload.markers}
+    assert "queried-location" not in marker_ids
+    assert response.map_payload.zones == []

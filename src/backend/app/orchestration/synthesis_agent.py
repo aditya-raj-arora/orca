@@ -606,7 +606,7 @@ class SynthesisAgent:
             # TODO(P2, Issue #14): populate from geofence/ocean results once
             # real agents land — coordinate exact marker/zone shape with P6
             # (owns Leaflet rendering, see MapPayload TODO).
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
         )
 
@@ -822,6 +822,103 @@ class SynthesisAgent:
             citations.append(Citation(source=agent_name, timestamp=_extract_data_timestamp(result)))
         return citations
 
+    def _build_map_payload(
+        self, plan: ExecutionPlan, available_results: dict[str, object]
+    ) -> MapPayload:
+        """FR-UI-2 / FR-GEO-3 (Issue #68). Builds markers/zones from real agent
+        results — see mapPayload.ts (P6) for the exact consumed shape.
+
+        DATA LIMITATION (flagged on #68, not silently worked around): neither
+        PFZResult nor GeofenceResult carries polygon geometry — PFZResult is a
+        single centroid point (schemas/ocean.py), and GeofenceResult is booleans
+        + distances only (schemas/geofence.py), no coordinates at all. So
+        despite the issue's "zone(s)"/"boundary" wording, this renders:
+          - the queried location: marker
+          - nearest PFZ: marker (it's a point in the data, not a polygon)
+          - geofence violation/proximity: marker at the queried location,
+            styled/labelled to carry the violation state, NOT a real boundary
+            polygon (there is no boundary geometry available here to draw one).
+        Real polygon rendering would need GeofenceBoundary's geometry (DB,
+        owned by P4) plumbed into GeofenceResult or compose()'s inputs — out of
+        scope for this issue as currently scoped; flagging for a follow-up if
+        real zone polygons are wanted.
+        """
+        markers: list[dict] = []
+
+        location = self._queried_location(plan)
+        if location is not None:
+            markers.append(
+                {
+                    "id": "queried-location",
+                    "lat": location["lat"],
+                    "lng": location["lon"],
+                    "label": location.get("place_name") or "Queried location",
+                }
+            )
+
+        pfz = available_results.get("ocean")
+        if pfz is not None:
+            centroid = getattr(pfz, "centroid", None)
+            if centroid is not None:
+                is_stale = getattr(pfz, "is_stale", False)
+                staleness_note = " (advisory may be stale)" if is_stale else ""
+                markers.append(
+                    {
+                        "id": "nearest-pfz",
+                        "lat": centroid.lat,
+                        "lng": centroid.lon,
+                        "label": f"Nearest Potential Fishing Zone{staleness_note}",
+                    }
+                )
+
+        geofence = available_results.get("geofencing")
+        if geofence is not None and location is not None:
+            is_violation = bool(getattr(geofence, "within_mpa", False)) or bool(
+                getattr(geofence, "within_imbl_buffer", False)
+            )
+            if is_violation:
+                mpa_name = getattr(geofence, "mpa_name", None)
+                label = (
+                    f"Inside Marine Protected Area: {mpa_name}"
+                    if mpa_name
+                    else "Within IMBL proximity buffer"
+                )
+                markers.append(
+                    {
+                        "id": "geofence-violation",
+                        "lat": location["lat"],
+                        "lng": location["lon"],
+                        "label": label,
+                        "isViolation": True,
+                    }
+                )
+            elif getattr(geofence, "imbl_distance_km", None) is not None:
+                markers.append(
+                    {
+                        "id": "geofence-proximity",
+                        "lat": location["lat"],
+                        "lng": location["lon"],
+                        "label": f"{geofence.imbl_distance_km:.1f} km from IMBL",
+                        "isProximity": True,
+                    }
+                )
+
+        # No zones: neither available dataclass carries polygon geometry (see
+        # docstring above) — mapPayload.ts's toZone() requires >= 3 coordinate
+        # points and silently drops anything without them, so shipping a
+        # single-point "zone" would just be dropped client-side anyway.
+        return MapPayload(markers=markers, zones=[])
+
+    def _queried_location(self, plan: ExecutionPlan) -> dict | None:
+        """Recovers the queried location dict ({"place_name", "lat", "lon"})
+        from the Planner's ExecutionPlan — same seam graph.py's own
+        _location_for() reads (LLD §2.2's per-invocation payload shape)."""
+        for inv in plan.invocations:
+            location = inv.input_payload.get("location")
+            if location and location.get("lat") is not None and location.get("lon") is not None:
+                return location
+        return None
+
     # ------------------------------------------------------------------ #
     # Composition without the LLM (#139)
     # ------------------------------------------------------------------ #
@@ -865,7 +962,7 @@ class SynthesisAgent:
         return ComposedResponse(
             text=" ".join(s["text"] for s in sentences),
             citations=self._build_citations(sentences, available_results),
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
             verified=True,
         )
@@ -909,7 +1006,7 @@ class SynthesisAgent:
         return ComposedResponse(
             text=text,
             citations=[],
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
             verified=False,
         )
