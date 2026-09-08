@@ -118,13 +118,34 @@ def test_session_history_returns_turns_after_a_query(monkeypatch):
 
 def test_query_sync_text_mode_end_to_end(monkeypatch):
     client = _client(monkeypatch)
+    # detect_language is real (Sarvam-backed, #153) and network-bound, so it's
+    # mocked here rather than left to fall through to the SARVAM_API_KEY-unset
+    # degrade path — this test exercises the happy path, not FR-LANG-6's
+    # fallback (see test_query_sync_text_mode_degrades_to_english_on_bhashini_
+    # failure for that). Returns the real BCP-47 code, matching TranscriptResult.
+    monkeypatch.setattr(gateway.BhashiniClient, "detect_language", lambda self, text: "en-IN")
     resp = client.post("/api/v1/query/s2", json={"mode": "text", "text": "conditions near Kochi?"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["text"] == "Conditions are moderate near Kochi."
     assert body["verdict"] == "CAUTION"
-    assert body["language"] == "en"  # BhashiniClient.detect_language unimplemented -> degrades
+    assert body["language"] == "en-IN"
     assert body["audio_base64"] is None  # mode=text, no TTS attempted
+
+
+def test_query_sync_text_mode_degrades_to_english_on_bhashini_failure(monkeypatch):
+    """FR-LANG-6: a text query can proceed without language detection, so a
+    detect_language failure (no SARVAM_API_KEY, network error, etc.) degrades
+    to English with a logged warning instead of failing the query."""
+    client = _client(monkeypatch)
+
+    def _explode(self, text):
+        raise RuntimeError("SARVAM_API_KEY is not set")
+
+    monkeypatch.setattr(gateway.BhashiniClient, "detect_language", _explode)
+    resp = client.post("/api/v1/query/s2b", json={"mode": "text", "text": "conditions near Kochi?"})
+    assert resp.status_code == 200
+    assert resp.json()["language"] == "en"
 
 
 def test_query_sync_voice_mode_without_bhashini_returns_503(monkeypatch):
