@@ -420,3 +420,68 @@ async def test_clarification_path_counts_as_successful_synthesis():
     out = await _synthesis_node(object())({"plan": plan, "results": {}})
     assert out["synthesis_ok"] is True
     assert out["composed"].text == "Where?"
+
+
+async def test_a_timed_out_agent_is_logged_not_only_traced(caplog):
+    """#124: the trace string only reaches the WebSocket client, so without a
+    log line a degraded agent leaves no server-side record at all — which is
+    exactly why two rounds of debugging could not tell a Synthesis timeout from
+    a raised exception."""
+    import logging
+
+    from app.orchestration import graph as graph_module
+
+    original = graph_module.AGENT_TIMEOUT_SECONDS
+    graph_module.AGENT_TIMEOUT_SECONDS = 0.1
+    try:
+        def _hang():
+            import time
+
+            time.sleep(1.0)
+
+        with caplog.at_level(logging.WARNING, logger="app.orchestration.graph"):
+            _, trace = await graph_module._call_bounded(
+                _hang, unavailable="sentinel", agent_label="Weather Agent"
+            )
+    finally:
+        graph_module.AGENT_TIMEOUT_SECONDS = original
+
+    assert "Weather Agent" in caplog.text
+    assert "budget" in caplog.text
+    assert "timed out" in trace  # user-facing trace unchanged (FR-PLAN-4)
+
+
+async def test_a_raising_agent_logs_its_traceback(caplog):
+    """logger.exception, not .error — the exception type and traceback are the
+    part that was being discarded."""
+    import logging
+
+    from app.orchestration.graph import _call_bounded
+
+    def _boom():
+        raise ValueError("stub: distinctive failure text")
+
+    with caplog.at_level(logging.ERROR, logger="app.orchestration.graph"):
+        result, trace = await _call_bounded(
+            _boom, unavailable="sentinel", agent_label="Synthesis Agent"
+        )
+
+    assert result == "sentinel"
+    assert "Synthesis Agent" in caplog.text
+    assert "ValueError" in caplog.text  # traceback reached the log
+    assert "stub: distinctive failure text" in caplog.text
+    assert "error (" in trace  # user-facing trace unchanged
+
+
+async def test_a_successful_agent_logs_nothing(caplog):
+    import logging
+
+    from app.orchestration.graph import _call_bounded
+
+    with caplog.at_level(logging.WARNING, logger="app.orchestration.graph"):
+        result, _ = await _call_bounded(
+            lambda: "fine", unavailable="sentinel", agent_label="Ocean Agent"
+        )
+
+    assert result == "fine"
+    assert caplog.text == ""

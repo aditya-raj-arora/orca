@@ -24,6 +24,7 @@ def _entities(**overrides) -> QueryEntities:
         lat=9.93,
         lon=76.26,
         time_window_text=None,
+        intent_weather=False,
         intent_safety=False,
         intent_fishing=False,
         intent_boundary=False,
@@ -81,6 +82,32 @@ def test_no_intent_is_informational_only_no_risk_safety():
     plan = route_query(_entities(), LOCATION, [])
     assert plan.invocations == []
     assert not plan.needs_clarification
+
+
+# --------------------------------------------------------------------- #
+# #126: intent_weather is informational-only — Weather Agent runs, but no
+# verdict — distinct from intent_safety's Weather + Geofencing + Risk.
+# --------------------------------------------------------------------- #
+
+
+def test_weather_intent_alone_invokes_only_weather_no_risk_safety():
+    plan = route_query(_entities(intent_weather=True), LOCATION, [])
+    assert _agent_names(plan) == ["weather"]
+
+
+def test_weather_intent_does_not_invoke_geofencing_or_risk_safety():
+    """A plain 'what is the weather' question must not drag in the safety
+    pipeline (#126) — only intent_safety widens routing to Geofencing+Risk."""
+    plan = route_query(_entities(intent_weather=True), LOCATION, [])
+    assert "geofencing" not in _agent_names(plan)
+    assert "risk_safety" not in _agent_names(plan)
+
+
+def test_weather_and_safety_intents_together_still_get_the_full_safety_pipeline():
+    """Doesn't weaken #112: if a query is BOTH informational-weather and
+    explicitly safety-framed, the safety pipeline still wins."""
+    plan = route_query(_entities(intent_weather=True, intent_safety=True), LOCATION, [])
+    assert _agent_names(plan) == ["weather", "geofencing", "risk_safety"]
 
 
 def test_trace_is_populated_for_fr_plan_4():
@@ -147,7 +174,29 @@ def test_keyword_fallback_with_no_match_stays_below_the_clarification_threshold(
     )
 
     assert not (entities.intent_safety or entities.intent_fishing or entities.intent_boundary)
+    assert not entities.intent_weather
     assert entities.confidence < MIN_ENTITY_CONFIDENCE
+
+
+def test_keyword_fallback_classifies_a_plain_weather_question_as_informational():
+    """#126: a plain weather question, with no safety framing, must classify
+    as intent_weather (informational) even in degraded (LLM-down) mode."""
+    entities = _planner_with_llm_down().extract_entities(
+        NormalizedQuery(text="what is the weather in chennai", language="en")
+    )
+
+    assert entities.intent_weather is True
+    assert entities.intent_safety is False
+    assert entities.confidence >= MIN_ENTITY_CONFIDENCE
+
+
+def test_keyword_fallback_prefers_safety_over_weather_when_both_present():
+    entities = _planner_with_llm_down().extract_entities(
+        NormalizedQuery(text="is it safe with this wind and wave forecast", language="en")
+    )
+
+    assert entities.intent_safety is True
+    assert entities.intent_weather is False
 
 
 def test_llm_down_with_no_prior_location_still_asks_for_one():
