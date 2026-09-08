@@ -35,10 +35,43 @@ None entries from the prompt/citations entirely, not describe them as data.
 follows the WeatherResult convention instead — always a real OceanParams
 object, unavailability represented by None fields, not a None entry.
 
-MODEL NOTE: uses gemini-3.6-flash, not gemini-2.5-flash (retired for new
-API keys — see Issue #<N>, also affects planner_agent.py). No `temperature`
-param passed — Gemini 3.x migration notes say sampling params are
-unsupported on 3.x models.
+MODEL NOTE: uses gemini-3.5-flash-lite (#168), not gemini-3.6-flash (the
+original choice) or gemini-2.5-flash (retired for new API keys — see Issue
+#<N>, also affects planner_agent.py). Measured against the real API with the
+real prompt, 5 runs each, scored against this file's OWN safety gates rather
+than approximated:
+
+    gemini-3.6-flash + LOW (as shipped)   median 24.2s   max 27.5s   5/5 passed
+    gemini-3.5-flash-lite                 median  1.7s   max  1.7s   5/5 passed
+    gemini-3.5-flash-lite + LOW           median  1.5s   max  1.7s   5/5 passed
+    gemini-3.5-flash                      median  8.0s   max  9.9s   5/5 passed
+    gemini-3.5-flash + LOW                429 RESOURCE_EXHAUSTED
+
+~15-16x faster, zero variance across 5 runs, and the SAME model
+PlannerAgent already uses (planner_agent.py picked it "for its higher
+free-tier RPM/RPD" — this run independently confirmed that: the flash/flash
+tier ran out of quota partway through the five-candidate experiment while
+flash-lite was untouched). Synthesis had been on the tighter tier the whole
+time. The 24.2s baseline here is itself informative, not just a large gap
+from #137's earlier 3.4s measurement — most likely the same quota
+contention, since it ran first in the experiment — which argues for the
+swap rather than against measuring it: the old model degrades badly under
+exactly the load a real demo produces, and flash-lite did not move.
+
+_THINKING_LEVEL is still applied (harmless no-op here — flash-lite reports
+no thought tokens either with or without it, matching planner_agent.py's
+#141 finding for the same model) rather than branched per model, so a
+future swap back to a thinking-capable model keeps the cap by default
+instead of it being silently missing.
+
+Not measured: prose fluency. The safety gates check structure and phrasing,
+not quality — but #139/#140 mean a fluency regression ships a working,
+cited answer rather than a broken one, which is a real backstop rather than
+a reason to skip checking real output before calling this done.
+
+No `temperature` param passed — Gemini 3.x migration notes say sampling
+params are unsupported on 3.x models. (flash-lite is on 3.5, kept for
+consistency with the rest of this file's config; harmless if unsupported.)
 """
 from __future__ import annotations
 
@@ -58,7 +91,7 @@ from app.schemas.synthesis import ComposedResponse, ExecutionPlan, MapPayload
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_MODEL = "gemini-3.6-flash"
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # --- compose()'s own budget (#133) --------------------------------------- #
 # Nothing used to bound a single generate_content call: the client was built
@@ -99,9 +132,17 @@ _MIN_CALL_BUDGET_S = 2.0
 # using its full deadline gets killed before compose() can degrade gracefully.
 _MIN_API_DEADLINE_S = 10.0
 
-# Gemini 3.x thinks before it answers, and on this call it thinks far more than
-# it writes — 1185 thought tokens against 260 output tokens. Measured on the
-# real API with this exact prompt, 3 runs each (#137):
+# HISTORICAL (#137) — measured against gemini-3.6-flash, the model this file
+# used at the time. Kept for the reasoning trail: it is why _THINKING_LEVEL
+# exists at all and why it defaults to LOW rather than being unset. #168
+# swapped the model to gemini-3.5-flash-lite, which reports NO thought tokens
+# with or without this setting (same finding planner_agent.py already made
+# for the same model, #141) — so none of the numbers below describe current
+# behaviour, only the problem LOW was built to solve.
+#
+# Gemini 3.x thinks before it answers, and on this call it thought far more
+# than it wrote — 1185 thought tokens against 260 output tokens. Measured on
+# the real API with this exact prompt, 3 runs each (#137):
 #
 #   as shipped (no thinking_config)   min 5.7s   median 9.8s   max 11.2s
 #   thinking_budget=0                 400 INVALID_ARGUMENT — rejected outright
@@ -565,7 +606,7 @@ class SynthesisAgent:
             # TODO(P2, Issue #14): populate from geofence/ocean results once
             # real agents land — coordinate exact marker/zone shape with P6
             # (owns Leaflet rendering, see MapPayload TODO).
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
         )
 
@@ -781,6 +822,103 @@ class SynthesisAgent:
             citations.append(Citation(source=agent_name, timestamp=_extract_data_timestamp(result)))
         return citations
 
+    def _build_map_payload(
+        self, plan: ExecutionPlan, available_results: dict[str, object]
+    ) -> MapPayload:
+        """FR-UI-2 / FR-GEO-3 (Issue #68). Builds markers/zones from real agent
+        results — see mapPayload.ts (P6) for the exact consumed shape.
+
+        DATA LIMITATION (flagged on #68, not silently worked around): neither
+        PFZResult nor GeofenceResult carries polygon geometry — PFZResult is a
+        single centroid point (schemas/ocean.py), and GeofenceResult is booleans
+        + distances only (schemas/geofence.py), no coordinates at all. So
+        despite the issue's "zone(s)"/"boundary" wording, this renders:
+          - the queried location: marker
+          - nearest PFZ: marker (it's a point in the data, not a polygon)
+          - geofence violation/proximity: marker at the queried location,
+            styled/labelled to carry the violation state, NOT a real boundary
+            polygon (there is no boundary geometry available here to draw one).
+        Real polygon rendering would need GeofenceBoundary's geometry (DB,
+        owned by P4) plumbed into GeofenceResult or compose()'s inputs — out of
+        scope for this issue as currently scoped; flagging for a follow-up if
+        real zone polygons are wanted.
+        """
+        markers: list[dict] = []
+
+        location = self._queried_location(plan)
+        if location is not None:
+            markers.append(
+                {
+                    "id": "queried-location",
+                    "lat": location["lat"],
+                    "lng": location["lon"],
+                    "label": location.get("place_name") or "Queried location",
+                }
+            )
+
+        pfz = available_results.get("ocean")
+        if pfz is not None:
+            centroid = getattr(pfz, "centroid", None)
+            if centroid is not None:
+                is_stale = getattr(pfz, "is_stale", False)
+                staleness_note = " (advisory may be stale)" if is_stale else ""
+                markers.append(
+                    {
+                        "id": "nearest-pfz",
+                        "lat": centroid.lat,
+                        "lng": centroid.lon,
+                        "label": f"Nearest Potential Fishing Zone{staleness_note}",
+                    }
+                )
+
+        geofence = available_results.get("geofencing")
+        if geofence is not None and location is not None:
+            is_violation = bool(getattr(geofence, "within_mpa", False)) or bool(
+                getattr(geofence, "within_imbl_buffer", False)
+            )
+            if is_violation:
+                mpa_name = getattr(geofence, "mpa_name", None)
+                label = (
+                    f"Inside Marine Protected Area: {mpa_name}"
+                    if mpa_name
+                    else "Within IMBL proximity buffer"
+                )
+                markers.append(
+                    {
+                        "id": "geofence-violation",
+                        "lat": location["lat"],
+                        "lng": location["lon"],
+                        "label": label,
+                        "isViolation": True,
+                    }
+                )
+            elif getattr(geofence, "imbl_distance_km", None) is not None:
+                markers.append(
+                    {
+                        "id": "geofence-proximity",
+                        "lat": location["lat"],
+                        "lng": location["lon"],
+                        "label": f"{geofence.imbl_distance_km:.1f} km from IMBL",
+                        "isProximity": True,
+                    }
+                )
+
+        # No zones: neither available dataclass carries polygon geometry (see
+        # docstring above) — mapPayload.ts's toZone() requires >= 3 coordinate
+        # points and silently drops anything without them, so shipping a
+        # single-point "zone" would just be dropped client-side anyway.
+        return MapPayload(markers=markers, zones=[])
+
+    def _queried_location(self, plan: ExecutionPlan) -> dict | None:
+        """Recovers the queried location dict ({"place_name", "lat", "lon"})
+        from the Planner's ExecutionPlan — same seam graph.py's own
+        _location_for() reads (LLD §2.2's per-invocation payload shape)."""
+        for inv in plan.invocations:
+            location = inv.input_payload.get("location")
+            if location and location.get("lat") is not None and location.get("lon") is not None:
+                return location
+        return None
+
     # ------------------------------------------------------------------ #
     # Composition without the LLM (#139)
     # ------------------------------------------------------------------ #
@@ -824,7 +962,7 @@ class SynthesisAgent:
         return ComposedResponse(
             text=" ".join(s["text"] for s in sentences),
             citations=self._build_citations(sentences, available_results),
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
             verified=True,
         )
@@ -868,7 +1006,7 @@ class SynthesisAgent:
         return ComposedResponse(
             text=text,
             citations=[],
-            map_payload=MapPayload(),
+            map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
             verified=False,
         )

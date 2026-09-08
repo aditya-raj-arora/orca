@@ -152,7 +152,13 @@ class QueryResponse(BaseModel):
     text: str
     language: str
     audio_base64: str | None = None
-    verdict: str
+    # None means "no verdict was requested" (#126: an informational-only
+    # query, e.g. plain weather, that never invoked Risk/Safety) — distinct
+    # from "INSUFFICIENT_DATA", which means Risk/Safety WAS asked and
+    # couldn't reach one. Conflating the two used to show an
+    # "Insufficient Data" badge on a plain weather question that never asked
+    # for a safety verdict in the first place.
+    verdict: str | None
     citations: list[dict]
     map_payload: dict
 
@@ -256,26 +262,38 @@ def _final_response(
     composed: ComposedResponse | None = state.get("composed")
     results = state.get("results") or {}
     risk = results.get("risk_safety")
-    # No risk verdict was computed (informational-only query, or a crashed
-    # run) -> the same "don't claim more than we know" rule as everywhere
-    # else in this system: never default to a verdict that reads as SAFE.
-    verdict = risk.verdict if isinstance(risk, RiskVerdict) else "INSUFFICIENT_DATA"
+    # #126: was Risk/Safety even asked for? graph._risk_node() only ever
+    # writes the "risk_safety" key into results when the plan actually
+    # invoked it (degraded/timed-out still writes the key, with value None) —
+    # its absence means an informational-only query (plain weather,
+    # fishing/boundary questions) never requested a verdict at all. That's
+    # not the same as one being withheld, so it reports verdict=None rather
+    # than "INSUFFICIENT_DATA".
+    risk_requested = "risk_safety" in results
+    if not risk_requested:
+        verdict: str | None = None
+    else:
+        # Risk/Safety was requested but produced nothing usable (crashed run,
+        # degraded agent) -> the same "don't claim more than we know" rule as
+        # everywhere else in this system: never default to a verdict that
+        # reads as SAFE.
+        verdict = risk.verdict if isinstance(risk, RiskVerdict) else "INSUFFICIENT_DATA"
 
-    # #121: same rule, applied to the case where the *explanation* is what
-    # failed. Synthesis degrading to graph._unavailable_composed_response()
-    # used to still render a green SAFE badge above "I couldn't put together an
-    # answer" — a verdict with zero supporting reasoning, which is exactly what
-    # FR-SYN-2 and SynthesisAgent's own refusal-to-ship checks exist to
-    # prevent. Withholding the verdict is not fabricating one: Risk's
-    # computation is unchanged, it is simply not presented as actionable when
-    # we cannot say why.
-    if not state.get("synthesis_ok", True):
-        logger.warning(
-            "Gateway: synthesis degraded — reporting INSUFFICIENT_DATA instead of "
-            "the unexplained %s verdict (#121)",
-            verdict,
-        )
-        verdict = "INSUFFICIENT_DATA"
+        # #121: same rule, applied to the case where the *explanation* is what
+        # failed. Synthesis degrading to graph._unavailable_composed_response()
+        # used to still render a green SAFE badge above "I couldn't put together
+        # an answer" — a verdict with zero supporting reasoning, which is
+        # exactly what FR-SYN-2 and SynthesisAgent's own refusal-to-ship checks
+        # exist to prevent. Withholding the verdict is not fabricating one:
+        # Risk's computation is unchanged, it is simply not presented as
+        # actionable when we cannot say why.
+        if not state.get("synthesis_ok", True):
+            logger.warning(
+                "Gateway: synthesis degraded — reporting INSUFFICIENT_DATA instead of "
+                "the unexplained %s verdict (#121)",
+                verdict,
+            )
+            verdict = "INSUFFICIENT_DATA"
 
     if composed is None:
         return QueryResponse(
