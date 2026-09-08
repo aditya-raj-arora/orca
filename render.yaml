@@ -78,6 +78,14 @@ services:
       # the `customer-` hosts or the key is ignored — see docs/DEPLOYMENT.md.
       - key: OPEN_METEO_API_KEY
         sync: false
+      # The other way out of per-IP metering (#151): a static-egress proxy, so
+      # the Open-Meteo quota is measured against an address only we use instead
+      # of Render's shared node IP. Optional and paid; unset, nothing is
+      # proxied. Contains credentials, hence sync:false — and check the
+      # dedicated-vs-shared-IP warning in docs/DEPLOYMENT.md before buying,
+      # since a shared pool just swaps one set of noisy neighbours for another.
+      - key: OUTBOUND_PROXY_URL
+        sync: false
       # Planner place-name -> coordinates (#110). Pinned here because the wrong
       # value is silently wrong rather than broken: without the country filter
       # "Kochi" resolves to Kochi, JAPAN and every agent then answers

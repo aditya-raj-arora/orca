@@ -63,3 +63,39 @@ def _clear_http_cooldowns():
 
     http_client.reset_cooldowns()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_synthesis_sentence_cache():
+    """Fifth instance of the same hazard (#143): SynthesisAgent caches
+    successful compositions at module scope, keyed on the prompt payload, so
+    the cache survives the per-request agent instances the graph builds.
+
+    Without this, a test whose fixture produces the same agent outputs as an
+    earlier one is served that earlier composition and never calls its own
+    stubbed LLM at all — which is exactly how four call-count assertions in
+    tests/unit/test_synthesis_agent.py started failing the moment the cache
+    landed."""
+    from app.orchestration import synthesis_agent
+
+    synthesis_agent.reset_sentence_cache()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_graph_and_llm_clients():
+    """#149 made three things process-global that used to be per-request: the
+    compiled graph, and one shared genai client per agent module. That is the
+    point — rebuilding them per request meant a new connection pool, and a new
+    TLS handshake, on every query — but it is also the same leak hazard as the
+    caches above, so it gets the same treatment.
+
+    Grouped into one fixture rather than three: they are a single change, and
+    conftest already carries five of these."""
+    import app.main as gateway
+    from app.orchestration import planner_agent, synthesis_agent
+
+    gateway._reset_compiled_graph()
+    planner_agent.reset_shared_llm_client()
+    synthesis_agent.reset_shared_llm_client()
+    yield

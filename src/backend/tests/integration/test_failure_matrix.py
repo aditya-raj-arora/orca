@@ -290,8 +290,14 @@ async def test_llm_timeout_at_extraction_still_completes_using_prior_turn_locati
 
 async def test_synthesis_llm_failure_degrades_to_a_safe_apology_not_a_crash(fault_http):
     """The Synthesis half of the same row. A composition failure must not
-    discard the query: the graph substitutes a response that claims nothing
-    and cites nothing, rather than shipping an uncited answer (FR-SYN-2)."""
+    discard the query.
+
+    Since #139 the fallback is no longer an apology that claims nothing: the
+    facts were computed and checked before Synthesis ran, so the response is
+    composed deterministically from them. FR-SYN-2 is stronger here, not
+    weaker — every sentence is generated from one agent's fields and tagged
+    with it, so the answer is cited by construction rather than by asking a
+    model to cite itself."""
     fault_http()
 
     class _PlannerOnlyLLM(ScriptedLLM):
@@ -305,8 +311,20 @@ async def test_synthesis_llm_failure_degrades_to_a_safe_apology_not_a_crash(faul
 
     composed = state["composed"]
     assert composed.text
-    assert composed.citations == []
-    assert "safe" not in composed.text.lower()
+    # Cited, not empty — and every citation names an agent that actually ran.
+    assert composed.citations
+    assert {c.source for c in composed.citations} <= set(state["results"])
+
+    # Whatever verdict Risk reached on the fallback data, the answer has to
+    # state it — that is what makes it an answer rather than an apology.
+    text = composed.text.lower()
+    assert _verdict(state).lower() in text
+
+    # Checking phrasing rather than the bare substring "safe", which the word
+    # "safety" trips on in Risk's own rationale. None of these are phrasings
+    # the deterministic builders can produce, for any verdict.
+    for reassurance in ("safe to", "conditions are good", "all clear", "no risk"):
+        assert reassurance not in text
 
 
 # --------------------------------------------------------------------- #
@@ -320,6 +338,10 @@ async def test_partial_agent_timeout_is_treated_exactly_like_an_error(
     sentinel, same INSUFFICIENT_DATA consequence — and the query must not wait
     on it indefinitely."""
     monkeypatch.setattr(graph_module, "AGENT_TIMEOUT_SECONDS", 0.5)
+    # The hung specialist here IS the weather node, which has run on its own
+    # budget since #131 — patching only the shared constant would leave it on
+    # the real 8s and let the "hang" finish normally, testing nothing.
+    monkeypatch.setattr(graph_module, "WEATHER_TIMEOUT_SECONDS", 0.5)
 
     def _hang(url):
         # Just past the (patched-down) budget: long enough that the graph must
@@ -351,11 +373,18 @@ async def test_partial_agent_timeout_is_treated_exactly_like_an_error(
 async def test_all_agents_hanging_still_lands_inside_the_nfr_perf_2_budget(fault_http):
     """NFR-PERF-2 (15 s multi-agent budget), structurally rather than by
     measuring a healthy run: with every upstream hung, the response time is
-    determined by AGENT_TIMEOUT_SECONDS and the graph's fan-out, not by the
-    upstreams. Uses the real timeout constant deliberately — this test is what
-    would fail if someone raised it past what the budget can absorb."""
+    determined by the graph's per-node budgets and fan-out, not by the
+    upstreams. Uses the real timeout constants deliberately — this test is what
+    would fail if someone raised one past what the budget can absorb."""
+    slowest_node = max(
+        graph_module.AGENT_TIMEOUT_SECONDS, graph_module.WEATHER_TIMEOUT_SECONDS
+    )
+
     def _hang(url):
-        time.sleep(graph_module.AGENT_TIMEOUT_SECONDS + 2.0)  # see note above
+        # Past every node budget, so each one is bounded by the graph rather
+        # than by the sleep finishing on its own (#131: deriving this from the
+        # shared constant alone tied it exactly to the weather node's 8s).
+        time.sleep(slowest_node + 2.0)
         raise AssertionError("unreachable")
 
     fault_http(all=_hang)

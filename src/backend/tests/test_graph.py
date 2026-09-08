@@ -275,6 +275,74 @@ def test_synthesis_gets_a_larger_budget_than_the_specialists():
     assert SYNTHESIS_TIMEOUT_SECONDS > AGENT_TIMEOUT_SECONDS
 
 
+def test_weather_gets_a_larger_budget_than_the_specialists():
+    """#131: the weather node fans out to four external sources and then, on an
+    Open-Meteo 429, assembles the WeatherAPI fallback leg — work that only
+    starts after a source has already spent its full SOURCE_BUDGET_S failing.
+    At 6s the deployed backend timed the node out 104ms before that fallback
+    returned, discarding weather data it had actually recovered."""
+    from app.orchestration.graph import AGENT_TIMEOUT_SECONDS, WEATHER_TIMEOUT_SECONDS
+
+    assert WEATHER_TIMEOUT_SECONDS > AGENT_TIMEOUT_SECONDS
+
+
+def test_synthesis_spends_its_budget_before_the_graph_backstop_fires():
+    """#133: compose() now owns a budget and returns its own degraded response
+    (which still carries the verdict) when it runs out. That only works if it
+    gives up BEFORE _call_bounded kills it — the graph's timeout discards that
+    response for a sentinel carrying no verdict at all."""
+    from app.orchestration.graph import SYNTHESIS_TIMEOUT_SECONDS
+    from app.orchestration.synthesis_agent import _DEFAULT_BUDGET_S, _MIN_API_DEADLINE_S
+
+    assert _DEFAULT_BUDGET_S < SYNTHESIS_TIMEOUT_SECONDS
+    # #135: one call may legitimately use the full deadline Gemini insists on,
+    # so the backstop has to clear it — otherwise compose() gets killed on the
+    # very call its budget was sized for and the degraded response is lost.
+    assert SYNTHESIS_TIMEOUT_SECONDS > _MIN_API_DEADLINE_S
+
+
+def test_weather_budget_leaves_headroom_over_one_sources_budget():
+    """The coupling that #131 was: http_client bounds ONE source, the graph
+    bounds the whole node, and the gap between them has to cover the fallback
+    leg, JSON/RSS parsing and thread scheduling on a shared core. It lived only
+    in comments in two modules, so it drifted to 1.0s and broke in production.
+    Pinned here at 2s so the next budget change has to look at both sides."""
+    from app.data_access.http_client import SOURCE_BUDGET_S
+    from app.orchestration.graph import WEATHER_TIMEOUT_SECONDS
+
+    assert WEATHER_TIMEOUT_SECONDS - SOURCE_BUDGET_S >= 2.0
+
+
+async def test_weather_node_is_bounded_by_its_own_budget(monkeypatch):
+    """The node must pass WEATHER_TIMEOUT_SECONDS to _call_bounded, not inherit
+    AGENT_TIMEOUT_SECONDS. Asserting the constant alone would pass even if the
+    node never wired it up — which is the bug #131 fixed."""
+    from app.orchestration import graph as graph_module
+
+    seen: dict[str, float | None] = {}
+
+    async def _spy(fn, *args, unavailable, agent_label, timeout=None):
+        seen["timeout"] = timeout
+        return unavailable, f"{agent_label}: spied"
+
+    monkeypatch.setattr(graph_module, "_call_bounded", _spy)
+
+    plan = ExecutionPlan(
+        invocations=[
+            AgentInvocationRequest(agent_name="weather", input_payload={"location": LOCATION})
+        ],
+        trace=[],
+    )
+    class FakeWeather:
+        def get_conditions(self, location, window):  # never called — _call_bounded is spied
+            raise AssertionError("the spy should have intercepted this")
+
+    node = graph_module._weather_node(agent=FakeWeather())
+    await node({"plan": plan})
+
+    assert seen["timeout"] == graph_module.WEATHER_TIMEOUT_SECONDS
+
+
 async def test_call_bounded_reads_the_global_timeout_at_call_time():
     """Regression guard: `timeout` must not be a default argument bound to
     AGENT_TIMEOUT_SECONDS at import — tests/integration/test_failure_matrix.py

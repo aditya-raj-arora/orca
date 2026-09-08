@@ -68,7 +68,32 @@ AGENT_TIMEOUT_SECONDS = 6.0
 # 6s is correct for the specialists, and loosening it would let one slow
 # external API eat the whole query budget, which is precisely what that
 # constant exists to prevent.
-SYNTHESIS_TIMEOUT_SECONDS = 10.0
+# Raised from 10.0 to clear Gemini's minimum request deadline (#135): the API
+# refuses a deadline under 10s, so a single call may legitimately run that long,
+# and a 10s backstop would kill compose() on the very call it was budgeted for —
+# discarding the degraded-but-useful response #133 exists to return.
+SYNTHESIS_TIMEOUT_SECONDS = 12.0
+
+# Weather gets its own budget too (#131), for the same reason Synthesis does:
+# AGENT_TIMEOUT_SECONDS is sized for a specialist making ONE bounded HTTP call,
+# and the weather node is not that. It fans out to four external sources
+# (forecast, marine, WeatherAPI, GDACS) and then, when Open-Meteo 429s from
+# Render's shared egress IP, assembles the WeatherAPI fallback leg (#116/#117)
+# — work that by definition only starts after a source has already spent its
+# http_client.SOURCE_BUDGET_S failing.
+#
+# At 6s that left ~1s for the fallback, the JSON/RSS parsing and thread
+# scheduling, on a free-tier box sharing one core with the rest of the graph.
+# It wasn't enough: the deployed backend timed the node out at 6.0s and the
+# WeatherAPI fallback landed 104ms later, so a query that HAD recovered its
+# weather data threw it away and answered INSUFFICIENT_DATA anyway.
+#
+# Sized as SOURCE_BUDGET_S plus real headroom, not as "6 wasn't enough, try 8":
+# a source can no longer outlive its own budget (that was the other half of
+# #131), so the slowest leg lands at ~5s and everything after it has 3s.
+# test_graph.py pins that relationship so the two constants can't drift apart
+# again in a comment-only coupling.
+WEATHER_TIMEOUT_SECONDS = 8.0
 
 
 def _merge_dicts(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
@@ -130,19 +155,23 @@ async def _call_bounded(
         return result, f"{agent_label}: data received"
     except TimeoutError:
         # #124: the trace string below is user-facing (FR-PLAN-4 / FR-UI-3) and
-        # only ever reaches the WebSocket client, so without these log lines a
+        # only ever reaches the WebSocket client, so without a log line here a
         # degraded agent leaves no trace on the server at all. Every adapter in
         # data_access/ logs before returning 'unavailable'; the graph was the
-        # one layer that degraded silently.
+        # one layer that degraded silently (mirrors #129's fix for the
+        # exception path below).
         logger.warning(
             "%s: exceeded its %ss budget — degrading to unavailable", agent_label, timeout
         )
         return unavailable, f"{agent_label}: timed out after {timeout}s (unavailable)"
     except Exception as exc:  # noqa: BLE001 - deliberate: degrade, don't crash the query
-        # logger.exception, not .error: str(exc) alone is what left us unable to
-        # tell a timeout from a raised exception in production. The traceback and
-        # exception type are the whole point.
-        logger.exception("%s: raised — degrading to unavailable", agent_label)
+        # #129: this used to be silent server-side — the failure only ever
+        # reached the client's Agent Trace panel via the trace_line below, so
+        # a real production error (e.g. Synthesis's Gemini call blowing up)
+        # left zero trace in Render logs. exc_info=exc keeps the full
+        # traceback, not just str(exc), so a KeyError/AttributeError from a
+        # code bug is as diagnosable as an upstream HTTP failure.
+        logger.error("%s: error — treated as unavailable", agent_label, exc_info=exc)
         return unavailable, f"{agent_label}: error ({exc}) — treated as unavailable"
 
 
@@ -178,6 +207,7 @@ def _weather_node(agent: WeatherAgent):
             window,
             unavailable=_unavailable_weather_result(),
             agent_label="Weather Agent",
+            timeout=WEATHER_TIMEOUT_SECONDS,
         )
         return {"results": {"weather": result}, "trace": [trace_line]}
 
@@ -279,19 +309,26 @@ def _synthesis_node(agent: SynthesisAgent):
                 "trace": ["Synthesis: skipped (clarification requested)"],
             }
 
-        sentinel = _unavailable_composed_response()
         composed, trace_line = await _call_bounded(
             agent.compose,
             plan,
             state.get("results", {}),
             state.get("language", "en"),
-            unavailable=sentinel,
+            unavailable=_unavailable_composed_response(),
             agent_label="Synthesis Agent",
             timeout=SYNTHESIS_TIMEOUT_SECONDS,
         )
         return {
             "composed": composed,
-            "synthesis_ok": composed is not sentinel,
+            # #133: was `composed is not sentinel`, which could only recognise
+            # the degradation this node built itself. SynthesisAgent has its own
+            # degraded response (returned when it runs out of budget, or when a
+            # safety check rejects the composition twice) and that one sailed
+            # through the identity check as if it were verified — putting a
+            # verdict badge over text that says nothing could be verified.
+            # ComposedResponse.verified is now the single signal, whoever built
+            # the response.
+            "synthesis_ok": composed.verified,
             "trace": [trace_line],
         }
 
@@ -419,7 +456,8 @@ def _unavailable_composed_response() -> ComposedResponse:
     given (contrast with a genuine INSUFFICIENT_DATA verdict, which IS an
     answer)."""
     return ComposedResponse(
-        text="Sorry, I couldn't put together an answer for that just now — please try again."
+        text="Sorry, I couldn't put together an answer for that just now — please try again.",
+        verified=False,
     )
 
 

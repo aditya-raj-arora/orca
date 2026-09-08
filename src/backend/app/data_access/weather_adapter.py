@@ -94,6 +94,17 @@ _CACHE_GRID_DEG = 0.05
 _CACHE_MAX_ENTRIES = 256
 _CACHE_LOCK = threading.Lock()
 _RESULT_CACHE: dict[tuple[float, float], tuple[float, AdapterResult]] = {}
+
+# GDACS feed body cache (#147). Unlike _RESULT_CACHE this is keyed on nothing:
+# the feed is a single global document, identical for every location, so one
+# entry serves every query. It is also 1.5 MB, which we were re-downloading per
+# query inside a 4s per-attempt budget on a one-core box — the bulk of this
+# leg's latency, and the whole of our exposure to a transient unreadable
+# response. TTL is short because a cyclone alert going stale is the one thing
+# worth spending a fetch on.
+_GDACS_FEED_TTL_S = 300.0
+_GDACS_FEED_LOCK = threading.Lock()
+_GDACS_FEED: tuple[float, str] | None = None
 _GDACS_NS = {
     "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
     "gdacs": "http://www.gdacs.org",
@@ -152,11 +163,30 @@ def _cache_put(key: tuple[float, float], result: AdapterResult, ttl_s: float) ->
             del _RESULT_CACHE[oldest]
 
 
+def _gdacs_feed_get() -> str | None:
+    with _GDACS_FEED_LOCK:
+        if _GDACS_FEED is None:
+            return None
+        stored_at, rss_text = _GDACS_FEED
+        if time.monotonic() - stored_at > _GDACS_FEED_TTL_S:
+            return None
+    return rss_text
+
+
+def _gdacs_feed_put(rss_text: str) -> None:
+    global _GDACS_FEED
+    with _GDACS_FEED_LOCK:
+        _GDACS_FEED = (time.monotonic(), rss_text)
+
+
 def _reset_rate_limit_state() -> None:
-    """Test hook: drop the module-level cache and cooldowns (see
+    """Test hook: drop the module-level caches and cooldowns (see
     tests/conftest.py). Not used in production code."""
+    global _GDACS_FEED
     with _CACHE_LOCK:
         _RESULT_CACHE.clear()
+    with _GDACS_FEED_LOCK:
+        _GDACS_FEED = None
     http_client.reset_cooldowns()
 
 
@@ -340,13 +370,30 @@ class WeatherDataAdapter(DataSourceAdapter):
 
     def _fetch_gdacs_tc(self, lat: float, lon: float) -> list[dict[str, Any]]:
         """GDACS GeoRSS -> the active tropical cyclones within
-        _GDACS_TC_RADIUS_KM of (lat, lon). [] is a valid, common result."""
-        r = _get(
-            "gdacs/rss",
-            f"{self._gdacs_base}/rss.xml",
-            headers={"User-Agent": "ORCA/prototype (SIH 2026)"},
-        )
-        return _parse_gdacs_tc(r.text, lat, lon)
+        _GDACS_TC_RADIUS_KM of (lat, lon). [] is a valid, common result —
+        and means "checked, none nearby", never "could not check" (#147).
+
+        The feed body is cached (#147): it is global, identical for every
+        location, and 1.5 MB, so fetching it per query was both the bulk of
+        this leg's latency and the whole of our exposure to a transient
+        unparseable response. Only the fetch is shared; the radius filter still
+        runs per query against the caller's coordinates.
+        """
+        rss_text = _gdacs_feed_get()
+        if rss_text is None:
+            r = _get(
+                "gdacs/rss",
+                f"{self._gdacs_base}/rss.xml",
+                headers={"User-Agent": "ORCA/prototype (SIH 2026)"},
+            )
+            rss_text = r.text
+            # Cached only after it parses — see _parse_gdacs_tc, which raises
+            # on a bad feed rather than pretending it saw no cyclones. Storing
+            # first would pin a broken feed for the whole TTL.
+            alerts = _parse_gdacs_tc(rss_text, lat, lon)
+            _gdacs_feed_put(rss_text)
+            return alerts
+        return _parse_gdacs_tc(rss_text, lat, lon)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -380,8 +427,17 @@ def _parse_gdacs_tc(rss_text: str, lat: float, lon: float) -> list[dict[str, Any
     out: list[dict[str, Any]] = []
     try:
         root = ET.fromstring(rss_text)
-    except ET.ParseError:
-        return out
+    except ET.ParseError as exc:
+        # #147: RAISE, do not return []. _normalise() reads None as "source not
+        # checked" and [] as "checked, nothing active", and a feed we could not
+        # read is emphatically the former. Returning [] here reported an
+        # unreadable cyclone feed as "no cyclones nearby" — the exact "empty
+        # list read as clear rather than unknown" trap WeatherResult and
+        # RiskSafetyAgent both carry docstrings warning about (NFR-REL-2).
+        # _safe() turns this into None and the existing unavailable path
+        # handles the rest.
+        logger.warning("_parse_gdacs_tc: unparseable GDACS RSS feed: %s", exc)
+        raise
     for item in root.iterfind(".//item"):
         etype = item.findtext("gdacs:eventtype", default="", namespaces=_GDACS_NS)
         if etype != "TC":
@@ -392,6 +448,7 @@ def _parse_gdacs_tc(rss_text: str, lat: float, lon: float) -> list[dict[str, Any
         try:
             dist = _rough_haversine_km(lat, lon, float(ilat), float(ilon))
         except ValueError:
+            logger.debug("_parse_gdacs_tc: non-numeric GDACS item coordinates %r/%r", ilat, ilon)
             continue
         if dist > _GDACS_TC_RADIUS_KM:
             continue
@@ -522,6 +579,7 @@ def _as_float(v: Any) -> float | None:
     try:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
+        logger.debug("_as_float: non-numeric value %r", v)
         return None
 
 
@@ -540,4 +598,5 @@ def _as_epoch(v: Any) -> int | None:
             s += "+00:00"
         return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
     except ValueError:
+        logger.debug("_as_epoch: unparseable timestamp value %r", v)
         return None

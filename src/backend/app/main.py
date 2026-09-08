@@ -24,7 +24,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import sys
+import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,14 +38,83 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.core.session import ConversationContext
 from app.language.bhashini_client import BhashiniClient, BhashiniUnavailableError
+from app.orchestration import planner_agent as planner_module
 from app.orchestration.graph import build_orchestration_graph
-from app.orchestration.planner_agent import NormalizedQuery
+from app.orchestration.planner_agent import NormalizedQuery, PlannerAgent
 from app.schemas.risk import RiskVerdict
 from app.schemas.synthesis import ComposedResponse
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ORCA Gateway", version="0.1.0")
+# Marks the handler _apply_log_level() owns, so repeated startups adjust it
+# instead of stacking duplicates (#145).
+_ORCA_HANDLER_FLAG = "_orca_app_handler"
+
+# Built once, reused for every request (#149) — see _build_graph().
+_COMPILED_GRAPH: Any = None
+_COMPILED_GRAPH_LOCK = threading.Lock()
+
+
+def _apply_log_level() -> None:
+    """Make core/config.py's `log_level` mean something (#143).
+
+    It has been declared since the settings module was written and read by
+    nothing — no basicConfig, no setLevel, no dictConfig — so the effective
+    level was the root default of WARNING and every logger.info() in this
+    codebase was invisible in production. That is not cosmetic: "Synthesis:
+    composed N sentences without the LLM" is an INFO line, so the component
+    answering a large share of queries left no trace at all, and its firing had
+    to be inferred from the wording of the response.
+
+    Scoped to the `app` namespace rather than the root logger on purpose —
+    INFO on httpx/google-genai/uvicorn internals is noise we do not want, and
+    turning it on for everything is how people end up ignoring logs.
+
+    Setting the level is necessary and NOT sufficient (#145). A logger's level
+    only decides which records it creates; emitting them is a handler's job,
+    and under uvicorn the root logger has no handlers at all. Every record from
+    `app.*` was therefore going to logging.lastResort, which is hard-coded to
+    WARNING — so INFO passed the logger check and was dropped by the handler.
+    #144 raised the logger level alone and changed nothing. Hence the explicit
+    handler below.
+
+    lastResort also writes a bare message with no level marker, which is why
+    Render labelled our logger.error lines as "info" and made filtering by
+    level useless. The formatter fixes that too.
+    """
+    level = logging.getLevelName(get_settings().log_level.upper())
+    if not isinstance(level, int):  # unknown name -> getLevelName returns a str
+        logger.warning(
+            "Unknown log_level %r — leaving logging at its default",
+            get_settings().log_level,
+        )
+        return
+
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(level)
+
+    # Idempotent: startup runs many times across the test suite, and a second
+    # handler would double every line.
+    if not any(getattr(h, _ORCA_HANDLER_FLAG, False) for h in app_logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)  # same stream uvicorn uses
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        setattr(handler, _ORCA_HANDLER_FLAG, True)
+        app_logger.addHandler(handler)
+    for handler in app_logger.handlers:
+        if getattr(handler, _ORCA_HANDLER_FLAG, False):
+            handler.setLevel(level)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # _warm_llm_clients is defined further down (it needs _build_graph); this
+    # only resolves it when startup actually runs.
+    _apply_log_level()
+    await _warm_llm_clients()
+    yield
+
+
+app = FastAPI(title="ORCA Gateway", version="0.1.0", lifespan=_lifespan)
 
 settings = get_settings()
 app.add_middleware(
@@ -147,6 +219,7 @@ async def _normalize_query(body: QueryRequest) -> NormalizedQuery:
             transcript = await asyncio.to_thread(BhashiniClient().transcribe, audio_bytes)
             return NormalizedQuery(text=transcript.text, language=transcript.language_code)
         except Exception as exc:  # noqa: BLE001 - FR-LANG-6: degrade, don't crash the socket
+            logger.warning("Speech-to-text unavailable (%s)", exc)
             raise BhashiniUnavailableError(str(exc)) from exc
 
     text = body.text or ""
@@ -237,10 +310,88 @@ def _build_graph():
     pattern) without needing real LLM/DB/external-API access — mirrors why
     build_orchestration_graph() itself takes optional agent params.
 
-    TODO(P1): also where the "cache the compiled graph rather than
-    rebuilding per request" TODO in graph.run_query() should eventually be
-    addressed, once that's worth the complexity."""
-    return build_orchestration_graph()
+    The compiled graph is built once and reused (#149) — the "cache the
+    compiled graph rather than rebuilding per request" TODO that stood here.
+    It became worth the complexity when it turned out to be a correctness
+    problem, not just a cost: rebuilding per request meant a fresh
+    PlannerAgent/SynthesisAgent per query, hence a fresh LLM client and a
+    fresh connection pool, hence a DNS + TCP + TLS handshake on every single
+    query. On a cold, CPU-throttled instance the first one exceeded even the
+    25s extraction deadline, so the first query after any deploy failed.
+
+    Agents are now shared across concurrent requests. They hold only lazily
+    built clients (httpx is thread-safe) and the adapters keep their state in
+    module-level caches guarded by their own locks — which is the pattern
+    those caches were written for. Per-query state lives in GraphState, not
+    on the agents.
+    """
+    global _COMPILED_GRAPH
+    with _COMPILED_GRAPH_LOCK:
+        if _COMPILED_GRAPH is None:
+            _COMPILED_GRAPH = build_orchestration_graph()
+        return _COMPILED_GRAPH
+
+
+def _reset_compiled_graph() -> None:
+    """Test hook (see tests/conftest.py). Not used in production code."""
+    global _COMPILED_GRAPH
+    with _COMPILED_GRAPH_LOCK:
+        _COMPILED_GRAPH = None
+
+
+async def _warm_llm_clients() -> None:
+    """Pay the first-call costs before a user is waiting on them (#141).
+
+    The deployed Planner call 504'd on its 10s deadline while measuring 0.9s
+    against the same API from a laptop. The difference was cold start: that
+    query was the first on a 36-second-old container, and PlannerAgent /
+    SynthesisAgent both import google.genai *inside* _build_llm_client(), so
+    the first request pays a heavy package import plus client construction and
+    a TLS handshake — on a free instance sharing one core with the rest of the
+    graph. The user's query then spends its deadline on work that has nothing
+    to do with the model.
+
+    Constructing a client opens no socket, which is why #141 alone did not fix
+    it (#149): the import cost moved off the user's clock but DNS + TCP + TLS
+    did not, and that is the expensive half. So the warm-up now makes one real
+    round trip. Combined with the shared clients in planner_agent /
+    synthesis_agent, the connection it opens is the one the first query uses.
+
+    Deliberately best-effort: warming is an optimisation, and a Gateway that
+    refuses to boot because an LLM client could not be constructed is strictly
+    worse than one that serves a degraded first query. Every agent below
+    already degrades on its own (LLD §6).
+    """
+    try:
+        # Building the graph constructs every agent and adapter once, and the
+        # result is cached — so the first real query isn't doing it while the
+        # clock runs.
+        await asyncio.to_thread(_build_graph)
+        await asyncio.to_thread(_open_llm_connection)
+        logger.info("Gateway: LLM clients and graph warmed at startup (#141, #149)")
+    except Exception as exc:  # noqa: BLE001 - warming must never block boot
+        logger.warning(
+            "Gateway: startup warm-up failed (%s) — the first query will pay "
+            "the connection cost instead",
+            exc,
+        )
+
+
+def _open_llm_connection() -> None:
+    """One minimal generate_content, purely to open the connection (#149).
+
+    A token of quota per container boot, against a first query that otherwise
+    spends 25s on a TLS handshake and then answers "could you rephrase".
+    Only the Planner's client is warmed: both agents' clients talk to the same
+    host, so DNS and the TLS session are shared even though the pools are not,
+    and the Planner is the call that has no fallback worth having.
+    """
+    client = PlannerAgent()._build_llm_client()  # the shared instance (#149)
+    client.models.generate_content(
+        model=planner_module._GEMINI_MODEL,
+        contents="ping",
+        config={"max_output_tokens": 1},
+    )
 
 
 @app.post("/api/v1/session", response_model=SessionResponse)
@@ -261,14 +412,16 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
         raw = await websocket.receive_json()
     except WebSocketDisconnect:
         return
-    except Exception:  # noqa: BLE001 - malformed frame, not a crash
+    except Exception as exc:  # noqa: BLE001 - malformed frame, not a crash
+        logger.warning("query_socket: malformed frame on receive_json: %s", exc)
         await websocket.send_json({"type": "error", "message": "Malformed query message."})
         await websocket.close()
         return
 
     try:
         body = QueryRequest(**{k: v for k, v in raw.items() if k != "type"})
-    except Exception:  # noqa: BLE001 - bad payload shape, not a crash
+    except Exception as exc:  # noqa: BLE001 - bad payload shape, not a crash
+        logger.warning("query_socket: bad QueryRequest payload shape: %s", exc)
         await websocket.send_json({"type": "error", "message": "Malformed query message."})
         await websocket.close()
         return
@@ -294,26 +447,44 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
     }
 
     state: dict[str, Any] = {}
-    async for update in compiled.astream(initial_state, stream_mode="updates"):
-        for node in _GRAPH_NODES:
-            payload = update.get(node)
-            if not payload:
-                continue
-            for key, value in payload.items():
-                if key == "trace":
+    try:
+        async for update in compiled.astream(initial_state, stream_mode="updates"):
+            for node in _GRAPH_NODES:
+                payload = update.get(node)
+                if not payload:
                     continue
-                if key == "results":
-                    state["results"] = {**state.get("results", {}), **value}
-                else:
-                    state[key] = value
-            for line in payload.get("trace", []):
-                await websocket.send_json({"type": "trace_update", "step": line})
+                for key, value in payload.items():
+                    if key == "trace":
+                        continue
+                    if key == "results":
+                        state["results"] = {**state.get("results", {}), **value}
+                    else:
+                        state[key] = value
+                for line in payload.get("trace", []):
+                    await websocket.send_json({"type": "trace_update", "step": line})
 
-    composed_text = state["composed"].text if state.get("composed") else ""
-    audio_b64 = await _synthesize_audio(composed_text, query.language, body.mode)
-    response = _final_response(state, query.language, audio_b64)
-    await websocket.send_json({"type": "final_response", **response.model_dump()})
-    await websocket.close()
+        composed_text = state["composed"].text if state.get("composed") else ""
+        audio_b64 = await _synthesize_audio(composed_text, query.language, body.mode)
+        response = _final_response(state, query.language, audio_b64)
+        await websocket.send_json({"type": "final_response", **response.model_dump()})
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001 - #129: every node already degrades
+        # (see graph.py's _call_bounded); reaching here means an actual bug
+        # in the wiring above it (main.py itself), not an agent/LLM failure.
+        # That must not vanish as an unexplained dropped connection.
+        logger.error("query_socket: unhandled error building the response", exc_info=exc)
+        try:
+            await websocket.send_json(
+                {"type": "error", "message": "Something went wrong processing that query."}
+            )
+        except Exception:  # noqa: BLE001 - socket may already be unusable
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001 - already closed/disconnected, nothing to do
+            pass
 
 
 @app.post("/api/v1/query/{session_id}", response_model=QueryResponse)

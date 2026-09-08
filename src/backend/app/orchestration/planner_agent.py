@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import get_settings
 from app.core.session import ConversationContext
@@ -47,6 +48,40 @@ _NO_MATCH_CONFIDENCE = 0.2
 # gemini-2.5-flash was retired for new API keys (#51); gemini-3.5-flash-lite
 # chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+# Bound on the entity-extraction call (#133). This is a server-side deadline
+# and Gemini rejects anything under 10s with a 400 (#135) — #134 set it to 5s,
+# which made every extraction fail instantly and sent well-formed queries down
+# the keyword fallback into a clarifying question. 10s is the floor the API
+# allows, not a preference; it cannot be tuned below that here.
+#
+# Deliberately more generous than Synthesis's budget, because the two have very
+# different fallbacks (#141). Synthesis degrades to a complete deterministic
+# answer (#139), so failing fast there costs fluency. Extraction degrades to
+# keyword matching, which cannot resolve a place name — the whole query
+# collapses into "could you rephrase", which is not an answer at all. A slow
+# correct plan beats a fast useless one.
+#
+# This is insurance against a hang, not a latency target: measured against the
+# real API this call is 0.9s (median of 5, no thought tokens — see #141). The
+# only reason it ever approached 10s was a cold container paying for
+# `import google.genai` on the user's clock, which _warm_llm_clients() in
+# main.py now does at startup instead.
+_LLM_TIMEOUT_S = 25.0
+
+# One client, and therefore one connection pool, for every PlannerAgent
+# instance (#149) — see _build_llm_client() for why.
+_SHARED_LLM_CLIENT: Any = None
+_SHARED_LLM_CLIENT_LOCK = threading.Lock()
+
+
+def reset_shared_llm_client() -> None:
+    """Test hook (see tests/conftest.py) — mirrors the other module-level
+    caches. Not used in production code."""
+    global _SHARED_LLM_CLIENT
+    with _SHARED_LLM_CLIENT_LOCK:
+        _SHARED_LLM_CLIENT = None
+
 
 _ENTITY_EXTRACTION_SYSTEM_PROMPT = """You are the entity-extraction step of a \
 marine safety assistant's query planner. Given a user's query (already \
@@ -282,12 +317,43 @@ class PlannerAgent:
         return GeocodingAdapter()
 
     def _build_llm_client(self):
+        """The client is shared across every PlannerAgent instance (#149).
+
+        graph.build_orchestration_graph() default-constructs a fresh
+        PlannerAgent, and main._build_graph() ran per request, so each query
+        used to build its own client with its own httpx connection pool — a
+        fresh DNS + TCP + TLS handshake on every single query. On a
+        CPU-throttled free instance the first one exceeded even the 25s
+        deadline, so the first query after any cold start failed while every
+        later one succeeded on OS-level DNS/TCP warmth.
+
+        Instances are cheap and come and go; the connection pool must not.
+        httpx clients are thread-safe, which is what makes sharing one across
+        concurrent requests fine.
+        """
+        global _SHARED_LLM_CLIENT
+        with _SHARED_LLM_CLIENT_LOCK:
+            if _SHARED_LLM_CLIENT is not None:
+                return _SHARED_LLM_CLIENT
+            _SHARED_LLM_CLIENT = self._construct_llm_client()
+            return _SHARED_LLM_CLIENT
+
+    def _construct_llm_client(self):
         # Imported lazily so importing this module never requires google-genai
         # to be installed (e.g. when only running route_query() unit tests).
         from google import genai
 
         settings = get_settings()
-        return genai.Client(api_key=settings.llm_api_key)
+        # #133: the SDK's default timeout is effectively unbounded for our
+        # purposes, and this is the one LLM call with no backstop above it —
+        # graph._planner_node calls plan() directly, not through _call_bounded,
+        # so nothing else would ever stop a stalled request. extract_entities()
+        # already treats any failure as "fall back to keyword matching", which
+        # is exactly the right response to a timeout.
+        return genai.Client(
+            api_key=settings.llm_api_key,
+            http_options={"timeout": int(_LLM_TIMEOUT_S * 1000)},  # milliseconds
+        )
 
     def _extract_via_keywords(self, query: NormalizedQuery) -> QueryEntities:
         """Degraded-mode fallback (LLD §6): no location resolution (there's no

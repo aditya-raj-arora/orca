@@ -248,12 +248,17 @@ def test_non_retryable_4xx_is_not_retried(
     assert router.calls["/forecast"] == 1
 
 
-def test_retry_never_exceeds_the_agent_timeout_budget(
+def test_retry_never_exceeds_the_weather_node_budget(
     wx: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # NFR-PERF-2: the graph gives a node AGENT_TIMEOUT_SECONDS, and the retry
-    # loop must stay inside it however many attempts the upstream buys.
-    from app.orchestration.graph import AGENT_TIMEOUT_SECONDS
+    # NFR-PERF-2: the graph gives the weather node WEATHER_TIMEOUT_SECONDS, and
+    # the retry loop must stay inside it however many attempts the upstream buys.
+    #
+    # NOTE (#131): this router answers instantly, so what this measures is the
+    # BACKOFF curve, not request time — it passed all through the production
+    # incident where the real fetch overran its budget. The bound on an actual
+    # request is pinned by test_attempt_timeout_* below; keep both.
+    from app.orchestration.graph import WEATHER_TIMEOUT_SECONDS
 
     _healthy(**{"/forecast": _502}).install(monkeypatch)
     started = time.monotonic()
@@ -261,7 +266,41 @@ def test_retry_never_exceeds_the_agent_timeout_budget(
     elapsed = time.monotonic() - started
 
     assert res.status == "unavailable"
-    assert elapsed < AGENT_TIMEOUT_SECONDS
+    assert elapsed < WEATHER_TIMEOUT_SECONDS
+
+
+def test_attempt_timeout_bounds_connect_plus_read_by_the_budget() -> None:
+    """#131: the bare float this used to pass was applied by httpx to connect,
+    read, write AND pool separately, so one attempt could outlive the whole
+    SOURCE_BUDGET_S it was supposedly bounded by — which is how the weather
+    node overran a 6s budget on a 5s source budget."""
+    from app.data_access.http_client import HTTP_TIMEOUT_S, _attempt_timeout
+
+    for remaining in (0.05, 0.5, 1.0, 3.0, 5.0, 60.0):
+        t = _attempt_timeout(remaining)
+        budget = min(HTTP_TIMEOUT_S, max(remaining, 0.1))
+        assert t.connect + t.read == pytest.approx(budget)
+        assert t.read > 0  # a 0s read fails on the spot and wastes the attempt
+
+
+def test_get_passes_a_split_timeout_not_a_bare_float(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The split above is worthless if get() doesn't actually hand it to httpx."""
+    from app.data_access import http_client
+
+    seen: dict[str, object] = {}
+
+    def _capture(url, **kw):
+        seen["timeout"] = kw.get("timeout")
+        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", _capture)
+    http_client.get("test/source", "https://example.invalid/x")
+
+    timeout = seen["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect + timeout.read <= http_client.SOURCE_BUDGET_S
 
 
 # --------------------------------------------------------------------------- #
@@ -522,3 +561,78 @@ def test_key_on_a_free_host_warns_that_it_will_be_ignored(
         get_settings.cache_clear()
 
     assert any("customer-" in r.getMessage() for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Static egress IP (#151) — the other way out of per-IP metering.
+#
+# Open-Meteo 429s on every query from Render's shared node IP. A proxy with a
+# static IP makes the quota ours again; the client-side policy above only ever
+# made us quiet about losing it.
+# --------------------------------------------------------------------------- #
+PROXY = "http://fixie:secret@velodrome.usefixie.com:80"
+
+
+@pytest.fixture()
+def _proxy_configured(monkeypatch: pytest.MonkeyPatch):
+    settings = wa.http_client.get_settings()
+    monkeypatch.setattr(settings, "outbound_proxy_url", PROXY, raising=False)
+    monkeypatch.setattr(settings, "outbound_proxy_sources", "open-meteo/", raising=False)
+    return settings
+
+
+def test_open_meteo_sources_go_through_the_proxy(_proxy_configured) -> None:
+    assert wa.http_client.proxy_for("open-meteo/forecast") == PROXY
+    assert wa.http_client.proxy_for("open-meteo/marine") == PROXY
+    assert wa.http_client.proxy_for("open-meteo/geocoding") == PROXY
+
+
+def test_unmetered_sources_do_not(_proxy_configured) -> None:
+    """GDACS is 1.5 MB per fetch and WeatherAPI is metered per key, not per IP.
+    Putting either on a bandwidth-metered proxy spends the plan for nothing."""
+    assert wa.http_client.proxy_for("gdacs/rss") is None
+    assert wa.http_client.proxy_for("weatherapi/alerts") is None
+
+
+def test_no_proxy_configured_changes_nothing() -> None:
+    """Unset is the default and must be a complete no-op."""
+    assert wa.http_client.proxy_for("open-meteo/forecast") is None
+
+
+def test_the_proxy_is_passed_to_httpx(
+    monkeypatch: pytest.MonkeyPatch, _proxy_configured
+) -> None:
+    """proxy_for() is worthless if get() doesn't hand it to httpx."""
+    seen: dict[str, object] = {}
+
+    def _capture(url, **kw):
+        seen["proxy"] = kw.get("proxy")
+        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", _capture)
+    wa.http_client.get("open-meteo/forecast", "https://api.open-meteo.com/v1/forecast")
+    assert seen["proxy"] == PROXY
+
+    wa.http_client.get("gdacs/rss", "https://www.gdacs.org/xml/rss.xml")
+    assert seen["proxy"] is None
+
+
+def test_the_proxy_credentials_never_reach_a_log_line(
+    monkeypatch: pytest.MonkeyPatch, _proxy_configured, caplog
+) -> None:
+    """The URL carries user:pass. A 429 and a transport error are the two paths
+    that log around a proxied call — neither may echo it."""
+    import logging
+
+    def _429(url, **_kw):
+        request = httpx.Request("GET", url)
+        return httpx.Response(429, request=request)
+
+    monkeypatch.setattr(httpx, "get", _429)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(httpx.HTTPStatusError):
+            wa.http_client.get("open-meteo/forecast", "https://api.open-meteo.com/v1/forecast")
+
+    assert caplog.text  # it did log something
+    assert "secret" not in caplog.text
+    assert PROXY not in caplog.text

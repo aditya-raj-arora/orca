@@ -124,5 +124,6 @@ def _parse_dt(value: object) -> datetime | None:
             dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
             return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         except ValueError:
+            logger.debug("_parse_dt: unparseable timestamp %r", value)
             return None
     return None
