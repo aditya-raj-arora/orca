@@ -231,6 +231,34 @@ def test_unsafe_verdict_is_also_withheld_when_unexplained():
 
 
 # --------------------------------------------------------------------------- #
+# #126: an informational-only query (no Risk/Safety invocation at all) must
+# report verdict=None, not "INSUFFICIENT_DATA" — that value means Risk/Safety
+# WAS asked and couldn't reach one, which is a different claim than "no
+# verdict was ever requested".
+# --------------------------------------------------------------------------- #
+
+
+def test_informational_query_reports_no_verdict_not_insufficient_data():
+    from app.main import _final_response
+    from app.schemas.synthesis import ComposedResponse
+
+    state = {
+        "results": {"weather": object()},  # risk_safety never invoked
+        "composed": ComposedResponse(text="It's 28°C with light winds near Kochi."),
+        "synthesis_ok": True,
+    }
+    assert _final_response(state, "en", None).verdict is None
+
+
+def test_informational_query_with_no_results_at_all_also_reports_no_verdict():
+    from app.main import _final_response
+    from app.schemas.synthesis import ComposedResponse
+
+    state = {"composed": ComposedResponse(text="Clarifying question or similar.")}
+    assert _final_response(state, "en", None).verdict is None
+
+
+# --------------------------------------------------------------------------- #
 # #141 — warm the LLM clients at startup.
 #
 # The deployed Planner call 504'd on its deadline while measuring 0.9s against
