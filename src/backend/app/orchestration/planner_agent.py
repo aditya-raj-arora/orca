@@ -91,11 +91,17 @@ translated to English text), extract:
 its place name and, if you know it, approximate latitude/longitude.
 - A time window, if mentioned (e.g. "tomorrow morning"), as free text — do \
 not attempt to compute exact timestamps yourself.
-- Three independent yes/no intent classifications, matching the query's \
+- Four independent yes/no intent classifications, matching the query's \
 subject matter (a query can be more than one, or none):
-  - intent_safety: does the query ask about safety, risk, or venturing out \
-to sea (e.g. "is it safe to fish near X", weather/wave conditions relevant \
-to going out)?
+  - intent_weather: does the query just ask what the weather/conditions \
+ARE, with no mention of going out, fishing, or safety (e.g. "what is the \
+weather in Chennai", "how's the sea near Kochi")? This is purely \
+informational — it does not by itself imply intent_safety.
+  - intent_safety: does the query explicitly ask whether it is safe, or \
+whether/how to venture out to sea (e.g. "is it safe to fish near X", \
+"can I go out today", "should I sail tomorrow")? A plain weather question \
+with no such framing is intent_weather, NOT intent_safety, even though \
+weather conditions are what a safety verdict would be based on.
   - intent_fishing: does the query ask about fishing zones, productivity, \
 or oceanographic conditions (PFZ, SST, chlorophyll)?
   - intent_boundary: does the query ask about maritime boundaries or \
@@ -106,8 +112,8 @@ rather than guessing.
 
 Respond with ONLY a JSON object, no other text, matching this shape:
 {"location_resolvable": bool, "place_name": str|null, "lat": float|null, \
-"lon": float|null, "time_window_text": str|null, "intent_safety": bool, \
-"intent_fishing": bool, "intent_boundary": bool, \
+"lon": float|null, "time_window_text": str|null, "intent_weather": bool, \
+"intent_safety": bool, "intent_fishing": bool, "intent_boundary": bool, \
 "intent_keywords": [str, ...], "confidence": float}
 """
 
@@ -125,6 +131,11 @@ class QueryEntities:
     lat: float | None
     lon: float | None
     time_window_text: str | None
+    # #126: intent_weather is the purely-informational "what's the weather"
+    # case — Weather Agent only, no verdict. Kept separate from intent_safety
+    # (Weather + Geofencing + Risk, and a verdict) so a plain weather question
+    # no longer drags in the safety pipeline it never asked for.
+    intent_weather: bool
     intent_safety: bool
     intent_fishing: bool
     intent_boundary: bool
@@ -220,6 +231,7 @@ class PlannerAgent:
             query.text,
             {
                 "location": location,
+                "intent_weather": entities.intent_weather,
                 "intent_safety": entities.intent_safety,
                 "intent_fishing": entities.intent_fishing,
                 "intent_boundary": entities.intent_boundary,
@@ -269,6 +281,7 @@ class PlannerAgent:
             lat=data.get("lat"),
             lon=data.get("lon"),
             time_window_text=data.get("time_window_text"),
+            intent_weather=bool(data.get("intent_weather", False)),
             intent_safety=bool(data.get("intent_safety", False)),
             intent_fishing=bool(data.get("intent_fishing", False)),
             intent_boundary=bool(data.get("intent_boundary", False)),
@@ -375,6 +388,7 @@ class PlannerAgent:
         Deliberately just above the threshold rather than high: this is a
         degraded extraction and the value should read as one."""
         text = query.text.lower()
+        weather_kw = ("weather", "forecast", "wind", "wave", "temperature", "rain", "conditions")
         safety_kw = ("safe", "safety", "risk", "danger", "go out", "venture")
         fishing_kw = ("fish", "fishing", "pfz", "catch", "zone")
         boundary_kw = ("boundary", "border", "restricted", "protected", "mpa", "imbl")
@@ -382,7 +396,9 @@ class PlannerAgent:
         def _matches(keywords: tuple[str, ...]) -> list[str]:
             return [kw for kw in keywords if kw in text]
 
-        matched = _matches(safety_kw) + _matches(fishing_kw) + _matches(boundary_kw)
+        weather_matched = _matches(weather_kw)
+        safety_matched = _matches(safety_kw)
+        matched = weather_matched + safety_matched + _matches(fishing_kw) + _matches(boundary_kw)
 
         return QueryEntities(
             location_resolvable=False,
@@ -390,7 +406,12 @@ class PlannerAgent:
             lat=None,
             lon=None,
             time_window_text=None,
-            intent_safety=bool(_matches(safety_kw)),
+            # A weather keyword hit only counts as intent_weather when there's
+            # no safety framing alongside it — "is it safe with this wind?"
+            # should still route to the safety pipeline, not the
+            # informational-only one.
+            intent_weather=bool(weather_matched) and not bool(safety_matched),
+            intent_safety=bool(safety_matched),
             intent_fishing=bool(_matches(fishing_kw)),
             intent_boundary=bool(_matches(boundary_kw)),
             confidence=_KEYWORD_FALLBACK_CONFIDENCE if matched else _NO_MATCH_CONFIDENCE,
@@ -432,16 +453,25 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
     """Figure 1, from the "Intent involves safety / venturing out to sea?"
     diamond onward (location resolution already happened in plan()):
 
-      - intent_safety?    -> invoke Weather Agent
+      - intent_weather?   -> invoke Weather Agent (informational only, #126:
+        no Risk/Safety, no verdict — the user asked what the weather is, not
+        whether it's safe to go out)
+      - intent_safety?    -> invoke Weather Agent (+ Geofencing + Risk below)
       - intent_fishing?   -> invoke Ocean Agent
       - intent_boundary?  -> invoke Geofencing Agent
-      - any of the above invoked? -> invoke Risk/Safety Agent with all
-        available outputs; otherwise this was an informational-only query.
+      - any of safety/fishing/boundary invoked? -> invoke Risk/Safety Agent
+        with all available outputs; otherwise (including the intent_weather-
+        only case) this was an informational-only query.
     """
     invocations: list[AgentInvocationRequest] = []
 
-    if entities.intent_safety:
-        trace.append("Planner: intent involves safety/venturing to sea -> invoking Weather Agent")
+    if entities.intent_weather or entities.intent_safety:
+        why = (
+            "safety/venturing to sea"
+            if entities.intent_safety
+            else "an informational weather question (#126 — no verdict)"
+        )
+        trace.append(f"Planner: intent involves {why} -> invoking Weather Agent")
         invocations.append(
             AgentInvocationRequest(
                 agent_name="weather",
@@ -476,7 +506,7 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
             AgentInvocationRequest(agent_name="geofencing", input_payload={"location": location})
         )
 
-    if invocations:
+    if entities.intent_safety or entities.intent_fishing or entities.intent_boundary:
         depends_on = [inv.agent_name for inv in invocations]
         trace.append(
             f"Planner: {depends_on} invoked -> invoking Risk/Safety Agent "
@@ -487,10 +517,18 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
                 agent_name="risk_safety", input_payload={"depends_on": depends_on}
             )
         )
+    elif invocations:
+        # #126: intent_weather alone got here — Weather Agent ran but this is
+        # informational, so no verdict is requested (main._final_response()
+        # reports verdict=None, distinct from a verdict that was withheld).
+        trace.append(
+            "Planner: informational weather query only -> Risk/Safety Agent not invoked, "
+            "no verdict"
+        )
     else:
         trace.append(
-            "Planner: no safety/fishing/boundary intent detected -> informational query only, "
-            "Risk/Safety Agent not invoked"
+            "Planner: no weather/safety/fishing/boundary intent detected -> informational "
+            "query only, Risk/Safety Agent not invoked"
         )
 
     return ExecutionPlan(invocations=invocations, trace=trace)
