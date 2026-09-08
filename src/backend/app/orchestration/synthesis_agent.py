@@ -819,7 +819,8 @@ class SynthesisAgent:
         if pfz is not None:
             centroid = getattr(pfz, "centroid", None)
             if centroid is not None:
-                staleness_note = " (advisory may be stale)" if getattr(pfz, "is_stale", False) else ""
+                is_stale = getattr(pfz, "is_stale", False)
+                staleness_note = " (advisory may be stale)" if is_stale else ""
                 markers.append(
                     {
                         "id": "nearest-pfz",

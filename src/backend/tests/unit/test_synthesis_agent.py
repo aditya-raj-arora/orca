@@ -9,9 +9,6 @@ import json
 import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
-from app.schemas.common import LatLon
-from app.schemas.ocean import PFZResult
-from app.schemas.synthesis import AgentInvocationRequest
 
 from app.orchestration.synthesis_agent import (
     _BUDGET_RESERVE_S,
@@ -20,9 +17,11 @@ from app.orchestration.synthesis_agent import (
     _THINKING_LEVEL,
     SynthesisAgent,
 )
+from app.schemas.common import LatLon
 from app.schemas.geofence import GeofenceResult
+from app.schemas.ocean import PFZResult
 from app.schemas.risk import RiskVerdict
-from app.schemas.synthesis import ExecutionPlan
+from app.schemas.synthesis import AgentInvocationRequest, ExecutionPlan
 from app.schemas.weather import WeatherResult
 
 
@@ -157,7 +156,9 @@ def _plan() -> ExecutionPlan:
     return ExecutionPlan(trace=["Planner: invoked weather, risk_safety"])
 
 
-def _plan_with_location(lat: float = 9.9312, lon: float = 76.2673, place_name: str = "Kochi") -> ExecutionPlan:
+def _plan_with_location(
+    lat: float = 9.9312, lon: float = 76.2673, place_name: str = "Kochi"
+) -> ExecutionPlan:
     """Same as _plan(), but with a resolved location in invocations — the
     shape _queried_location() (synthesis_agent.py) reads, matching how
     planner_agent.route_query() actually populates input_payload."""
@@ -773,7 +774,9 @@ def test_map_payload_geofence_only():
     assert "geofence-violation" in marker_ids
     assert "nearest-pfz" not in marker_ids
 
-    violation_marker = next(m for m in response.map_payload.markers if m["id"] == "geofence-violation")
+    violation_marker = next(
+        m for m in response.map_payload.markers if m["id"] == "geofence-violation"
+    )
     assert violation_marker["isViolation"] is True
     assert "Gulf of Mannar" in violation_marker["label"]
 
@@ -808,7 +811,9 @@ def test_map_payload_both_pfz_and_geofence():
     pfz_marker = next(m for m in response.map_payload.markers if m["id"] == "nearest-pfz")
     assert "stale" in pfz_marker["label"].lower()
 
-    proximity_marker = next(m for m in response.map_payload.markers if m["id"] == "geofence-proximity")
+    proximity_marker = next(
+        m for m in response.map_payload.markers if m["id"] == "geofence-proximity"
+    )
     assert proximity_marker["isProximity"] is True
     assert "42.7" in proximity_marker["label"]
 
