@@ -50,6 +50,12 @@ _NO_MATCH_CONFIDENCE = 0.2
 # chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# Deadline for the single retry attempt in extract_entities() below. Kept at
+# the API's own floor (see _LLM_TIMEOUT_S's comment) rather than the full
+# _LLM_TIMEOUT_S, so a genuinely stuck provider still bails out in bounded
+# time on the second attempt rather than doubling the worst case to ~50s.
+_RETRY_TIMEOUT_S = 10.0
+
 # Bound on the entity-extraction call (#133). This is a server-side deadline
 # and Gemini rejects anything under 10s with a 400 (#135) — #134 set it to 5s,
 # which made every extraction fail instantly and sent well-formed queries down
@@ -273,32 +279,56 @@ class PlannerAgent:
     def extract_entities(self, query: NormalizedQuery) -> QueryEntities:
         """Uses the LLM provider (Gemini structured JSON output, see
         docs/CREDENTIALS.md #1) to extract structured entities from free
-        text. On provider failure/timeout, falls back to simple keyword
-        matching for intent classification (LLD §6 error-handling table) —
-        location resolution has no non-LLM fallback, so a fallback
+        text. On provider failure/timeout, retries once (deployed traffic has
+        shown transient Gemini 504 DEADLINE_EXCEEDED responses that a bare
+        retry clears — see #36's live rehearsal), then falls back to simple
+        keyword matching for intent classification (LLD §6 error-handling
+        table) — location resolution has no non-LLM fallback, so a fallback
         extraction always leaves location unresolved and lets plan()'s
-        clarifying-question path handle it."""
+        clarifying-question path handle it.
+
+        The retry matters more here than it would look: a transient failure
+        with no retry doesn't just cost fluency (as it does for Synthesis's
+        own regeneration) — it silently disables location resolution for the
+        whole turn, which reads to a fisherman as "the app didn't understand
+        Kochi" for a query that named Kochi plainly."""
         try:
             return self._extract_via_llm(query)
         except Exception as exc:  # noqa: BLE001 - deliberate broad catch, see LLD §6
             logger.warning(
-                "Planner.extract_entities: LLM extraction failed (%s), "
+                "Planner.extract_entities: LLM extraction failed (%s), retrying once",
+                exc,
+            )
+        try:
+            return self._extract_via_llm(query, timeout_s=_RETRY_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - deliberate broad catch, see LLD §6
+            logger.warning(
+                "Planner.extract_entities: retry also failed (%s), "
                 "falling back to keyword matching",
                 exc,
             )
             return self._extract_via_keywords(query)
 
-    def _extract_via_llm(self, query: NormalizedQuery) -> QueryEntities:
+    def _extract_via_llm(
+        self, query: NormalizedQuery, timeout_s: float | None = None
+    ) -> QueryEntities:
         client = self._llm_client or self._build_llm_client()
+        config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            # temperature/top_p/top_k are unsupported on Gemini 3.x —
+            # the model manages its own sampling now (#51); passing
+            # them errors on later model generations.
+        }
+        if timeout_s is not None:
+            # Per-call override (same pattern as synthesis_agent.py's
+            # _generate_sentences) — used only by extract_entities()'s retry,
+            # so a stuck provider still bails in bounded time on attempt two
+            # rather than doubling the worst case to the full _LLM_TIMEOUT_S.
+            config["http_options"] = {"timeout": int(timeout_s * 1000)}
         response = client.models.generate_content(
             model=_GEMINI_MODEL,
             contents=f"{_ENTITY_EXTRACTION_SYSTEM_PROMPT}\n\nUser query: {query.text}",
-            config={
-                "response_mime_type": "application/json",
-                # temperature/top_p/top_k are unsupported on Gemini 3.x —
-                # the model manages its own sampling now (#51); passing
-                # them errors on later model generations.
-            },
+            config=config,
         )
         data = json.loads(response.text)
         return QueryEntities(
