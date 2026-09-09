@@ -92,8 +92,52 @@ export default function MapPanel({
     };
   };
 
+  // NFR-USE-3: a text/voice-equivalent of the map's content, for users who
+  // can't (or don't) read the visual layer. Visually hidden but always
+  // present in the DOM, so a screen reader can announce it; aria-live
+  // re-announces it whenever markers/zones/errors change (e.g. a new query).
+  const buildMapSummary = (): string => {
+    const parts: string[] = [];
+
+    if (markers.length === 0 && zones.length === 0) {
+      parts.push("No location has been queried yet.");
+    }
+
+    markers.forEach((marker) => {
+      let status = "";
+      if (marker.isViolation) status = ", boundary violation detected";
+      else if (marker.isProximity) status = ", near a restricted boundary";
+      parts.push(
+        `Marker: ${marker.label} at ${marker.lat.toFixed(3)}, ${marker.lng.toFixed(3)}${status}.`
+      );
+    });
+
+    zones.forEach((zone) => {
+      let status = "";
+      if (zone.isViolation) status = ", violation detected";
+      else if (zone.isProximity) status = ", proximity warning";
+      parts.push(`Zone: ${zone.label}, type ${zone.zoneType || "Standard Zone"}${status}.`);
+    });
+
+    if (weatherError) parts.push("Weather data is unavailable for this query.");
+    if (oceanError) parts.push("Ocean data is unavailable for this query.");
+    if (geofenceError) parts.push("Geofence data is unavailable for this query.");
+
+    return parts.join(" ");
+  };
+
   return (
-    <div style={{ position: "relative", height: "100%", width: "100%" }}>
+    <div
+      role="region"
+      aria-label="Map showing queried location, fishing zones, and maritime boundaries"
+      style={{ position: "relative", height: "100%", width: "100%" }}
+    >
+      <p
+        className="sr-only"
+        aria-live="polite"
+      >
+        {buildMapSummary()}
+      </p>
       <div style={{
         position: "absolute",
         top: "10px",
