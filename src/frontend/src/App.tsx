@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import ChatPanel from "./components/Chat/ChatPanel";
 import MapPanel from "./components/Map/MapPanel";
 import type { MarkerData, ZoneData } from "./components/Map/MapPanel";
-import TraceViewer from "./components/TraceViewer/TraceViewer";
 import { MAP_UPDATE_EVENT, normalizeMapPayload } from "./api/mapPayload";
 
 export default function App() {
@@ -137,14 +136,19 @@ const detail = (event as CustomEvent<OrcaEventDetail>).detail;
           <ChatPanel />
         </div>
         <div className="glass-panel map-trace-container">
-          <MapPanel 
-            markers={markers} 
-            zones={zones} 
+          {/* #177: the agent trace lives in ChatPanel now — a live progress
+              indicator while a query runs, then a collapsed per-answer
+              disclosure — driven by real trace_update events. A separate
+              TraceViewer used to render here showing hardcoded mock steps
+              that never changed; removed rather than fixed, since it wasn't
+              a smaller version of the real feature. */}
+          <MapPanel
+            markers={markers}
+            zones={zones}
             weatherError={weatherError}
             oceanError={oceanError}
             geofenceError={geofenceError}
           />
-          <TraceViewer />
         </div>
       </div>
     </div>
