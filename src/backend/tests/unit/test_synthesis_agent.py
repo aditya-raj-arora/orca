@@ -573,6 +573,89 @@ def test_without_the_llm_the_answer_is_real_and_verified():
     }
 
 
+def test_route_caveat_is_appended_on_the_llm_composed_path():
+    """#173: a query flagged as a route by the Planner must carry the caveat
+    even when the LLM successfully composed the answer — a route question
+    must never look like it got full-journey coverage."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Winds near Kochi are moderate.", "source": "weather"},
+            {"text": "Based on this, conditions are CAUTION.", "source": "risk_safety"},
+        ]
+    )
+    plan = ExecutionPlan(trace=[], route_query_detected=True)
+    results = {
+        "weather": {
+            "wind_speed_kmh": 18.0,
+            "wave_height_m": 1.2,
+            "active_alerts": [],
+            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
+            "status": "ok",
+        },
+        "risk_safety": {"verdict": "CAUTION", "rationale": "Moderate wind", "contributing_factors": []},
+    }
+
+    response = SynthesisAgent(llm_client=fake_client).compose(plan, results, language="en")
+
+    assert "only the location" in response.text.lower()
+    assert "full route" in response.text.lower() or "full path" in response.text.lower()
+
+
+def test_no_route_caveat_when_not_flagged():
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [{"text": "Winds near Kochi are moderate.", "source": "weather"}]
+    )
+    results = {
+        "weather": {
+            "wind_speed_kmh": 18.0,
+            "wave_height_m": 1.2,
+            "active_alerts": [],
+            "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
+            "status": "ok",
+        },
+    }
+
+    response = SynthesisAgent(llm_client=fake_client).compose(_plan(), results, language="en")
+
+    assert "route" not in response.text.lower()
+
+
+def test_route_caveat_survives_the_no_llm_path():
+    """#173: the caveat must not depend on the LLM succeeding — it is appended
+    deterministically, so a dead client still carries it."""
+    plan = ExecutionPlan(
+        invocations=_plan().invocations, trace=_plan().trace, route_query_detected=True
+    )
+    response = SynthesisAgent(llm_client=_dead_client()).compose(
+        plan, _full_results(), language="en"
+    )
+
+    assert response.verified is True
+    assert "only the location" in response.text.lower()
+
+
+def test_route_caveat_survives_the_degraded_path(monkeypatch):
+    """#173: even the last-resort apology must carry the caveat — an unverified
+    route answer is exactly the case that most needs the honesty note."""
+    import app.orchestration.synthesis_agent as sa
+
+    monkeypatch.setattr(sa, "_deterministic_sentences", lambda _results: [])
+    fake_client = MagicMock()
+    fake_client.models.generate_content.side_effect = RuntimeError("gemini exploded")
+    plan = ExecutionPlan(
+        invocations=_plan().invocations, trace=_plan().trace, route_query_detected=True
+    )
+
+    response = SynthesisAgent(llm_client=fake_client).compose(
+        plan, _caution_results(), language="en"
+    )
+
+    assert response.verified is False
+    assert "only the location" in response.text.lower()
+
+
 def test_without_the_llm_every_sentence_still_carries_a_citation():
     """FR-SYN-2 holds by construction here — each sentence is generated from
     one agent's fields — but assert it rather than assuming it."""

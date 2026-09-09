@@ -136,6 +136,34 @@ def test_area_scope_is_passed_to_ocean_and_geofencing_payloads():
     assert any("area-scoped" in step for step in plan.trace)
 
 
+def test_route_query_is_flagged_on_the_plan():
+    """#173 interim fix: no route concept exists, so route_query() must at
+    least flag the gap on the plan for SynthesisAgent to caveat, rather than
+    silently answering as if the single resolved point covered the journey."""
+    plan = route_query(_entities(intent_safety=True, route_query=True), LOCATION, [])
+    assert plan.route_query_detected is True
+    assert any("route" in step.lower() for step in plan.trace)
+
+
+def test_non_route_query_does_not_set_the_flag():
+    plan = route_query(_entities(intent_safety=True), LOCATION, [])
+    assert plan.route_query_detected is False
+
+
+def test_keyword_fallback_flags_route_phrased_queries():
+    ents = PlannerAgent()._extract_via_keywords(
+        NormalizedQuery(text="what is the safest route from Kochi to Colombo", language="en")
+    )
+    assert ents.route_query is True
+
+
+def test_keyword_fallback_leaves_plain_location_queries_unflagged():
+    ents = PlannerAgent()._extract_via_keywords(
+        NormalizedQuery(text="is it safe to fish near Kochi tomorrow", language="en")
+    )
+    assert ents.route_query is False
+
+
 def test_keyword_fallback_flags_which_zones_query_as_area():
     ents = PlannerAgent()._extract_via_keywords(
         NormalizedQuery(
