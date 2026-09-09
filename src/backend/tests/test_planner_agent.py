@@ -222,11 +222,12 @@ def _planner_with_llm_down() -> PlannerAgent:
 
 
 class _FlakyLLM:
-    """Fails once, then succeeds — the transient-504 shape observed on the
-    deployed backend (#36's live rehearsal) that a bare retry clears."""
+    """Fails `fail_count` times, then succeeds — the transient-504/503 shapes
+    observed on the deployed backend (#36's and #43's live rehearsals)."""
 
-    def __init__(self) -> None:
+    def __init__(self, fail_count: int = 1) -> None:
         self.calls = 0
+        self._fail_count = fail_count
 
     class _R:
         text = (
@@ -244,7 +245,7 @@ class _FlakyLLM:
             @staticmethod
             def generate_content(**_kwargs):
                 outer.calls += 1
-                if outer.calls == 1:
+                if outer.calls <= outer._fail_count:
                     raise TimeoutError("stub: transient 504 DEADLINE_EXCEEDED")
                 return _FlakyLLM._R()
 
@@ -255,7 +256,7 @@ def test_extraction_retries_once_on_a_transient_llm_failure():
     """#36: a single transient failure must not fall all the way to the
     keyword fallback (which can never resolve a location) when a retry would
     have worked."""
-    llm = _FlakyLLM()
+    llm = _FlakyLLM(fail_count=1)
 
     entities = PlannerAgent(llm_client=llm).extract_entities(
         NormalizedQuery(text="is it safe to fish near Kochi", language="en")
@@ -265,6 +266,21 @@ def test_extraction_retries_once_on_a_transient_llm_failure():
     assert entities.location_resolvable is True
     assert entities.place_name == "Kochi"
     assert entities.confidence == 0.9  # the LLM's own value, not the keyword sentinel
+
+
+def test_extraction_survives_two_failures_before_the_third_attempt_succeeds():
+    """#43: live rehearsal caught a sustained Gemini 503 "high demand" burst
+    that outlasted a single retry — _MAX_RETRIES=2 means a third attempt
+    still gets a chance before falling back to keywords."""
+    llm = _FlakyLLM(fail_count=2)
+
+    entities = PlannerAgent(llm_client=llm).extract_entities(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en")
+    )
+
+    assert llm.calls == 3
+    assert entities.location_resolvable is True
+    assert entities.confidence == 0.9
 
 
 def test_keyword_fallback_classifies_intent_when_the_llm_is_down():
@@ -299,6 +315,20 @@ def test_keyword_fallback_classifies_a_plain_weather_question_as_informational()
 
     assert entities.intent_weather is True
     assert entities.intent_safety is False
+    assert entities.confidence >= MIN_ENTITY_CONFIDENCE
+
+
+def test_keyword_fallback_recognises_sea_as_a_weather_question():
+    """#43: live rehearsal caught "what's the sea like off Chennai right
+    now?" matching zero keywords (no "weather"/"wind"/etc.) when a genuine
+    Gemini overload sent it to this fallback — a plainly weather-shaped
+    question landed below MIN_ENTITY_CONFIDENCE and asked for clarification
+    instead of answering. "sea" is natural phrasing for this domain."""
+    entities = _planner_with_llm_down().extract_entities(
+        NormalizedQuery(text="what's the sea like off Chennai right now", language="en")
+    )
+
+    assert entities.intent_weather is True
     assert entities.confidence >= MIN_ENTITY_CONFIDENCE
 
 
