@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -23,11 +23,14 @@ from app.data_access.weather_adapter import (
     _GDACS_NS,
     WeatherDataAdapter,
     _alert_strings,
+    _forecast_from_weatherapi,
+    _forecast_target_epoch,
     _gdacs_item_latlon,
+    _hourly_to_current,
     _normalise,
     _parse_gdacs_tc,
 )
-from app.schemas.common import LatLon
+from app.schemas.common import LatLon, TimeWindow
 
 SAMPLES = Path(__file__).resolve().parents[3] / "docs" / "samples" / "weather"
 
@@ -273,7 +276,9 @@ def _stub_sources(
     gdacs: object = (),
 ) -> None:
     def _fn(val: object):
-        return (lambda _la, _lo: _raise()) if val is _raise else (lambda _la, _lo: val)
+        # *_a so the same stub serves _fetch_weatherapi/_fetch_gdacs_tc (lat,
+        # lon) and _fetch_forecast/_fetch_marine (lat, lon, target_epoch, #171).
+        return (lambda *_a: _raise()) if val is _raise else (lambda *_a: val)
 
     def _wapi_payload(val: object):
         """_fetch_weatherapi returns the whole forecast.json payload (#116), but
@@ -366,6 +371,117 @@ def test_agent_over_adapter_end_to_end_stubbed(monkeypatch: pytest.MonkeyPatch) 
     assert r.wave_height_m >= 0
     assert r.data_timestamp is not None
     assert r.data_timestamp.tzinfo is not None
+
+
+# --------------------------------------------------------------------------- #
+# #171 — a future time_window must produce a real forecast, not right-now data
+# --------------------------------------------------------------------------- #
+def test_forecast_target_epoch_none_for_no_window_or_window_including_now() -> None:
+    now = datetime(2026, 9, 9, 14, 0, tzinfo=UTC)
+    assert _forecast_target_epoch(None, now) is None
+    # "what is the weather now" resolves to a whole-day window that spans `now`
+    today = TimeWindow(now.replace(hour=0), now.replace(hour=0) + timedelta(days=1))
+    assert _forecast_target_epoch(today, now) is None
+
+
+def test_forecast_target_epoch_is_window_midpoint_for_future_window() -> None:
+    now = datetime(2026, 9, 9, 14, 0, tzinfo=UTC)
+    tomorrow_morning = TimeWindow(
+        datetime(2026, 9, 10, 6, 0, tzinfo=UTC), datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+    )
+    got = _forecast_target_epoch(tomorrow_morning, now)
+    assert got == int(datetime(2026, 9, 10, 9, 0, tzinfo=UTC).timestamp())
+
+
+def test_hourly_to_current_picks_sample_nearest_target() -> None:
+    base = int(datetime(2026, 9, 10, 0, 0, tzinfo=UTC).timestamp())
+    hourly = {
+        "time": [base, base + 3600, base + 7200],
+        "wind_speed_10m": [10.0, 22.0, 15.0],
+        "visibility": [20000.0, 18000.0, 19000.0],
+    }
+    target = base + 3600 + 600  # closest to index 1
+    out = _hourly_to_current(hourly, target, ["wind_speed_10m", "visibility"])
+    assert out == {"current": {"time": base + 3600, "wind_speed_10m": 22.0, "visibility": 18000.0}}
+
+
+def test_hourly_to_current_raises_when_series_empty() -> None:
+    with pytest.raises(ValueError, match="no hourly timestamps"):
+        _hourly_to_current({}, 123, ["wind_speed_10m"])
+
+
+def test_forecast_from_weatherapi_selects_nearest_hour_when_target_given() -> None:
+    base = int(datetime(2026, 9, 10, 0, 0, tzinfo=UTC).timestamp())
+    payload = {
+        "forecast": {
+            "forecastday": [
+                {"hour": [
+                    {"time_epoch": base, "wind_kph": 8.0, "vis_km": 10.0},
+                    {"time_epoch": base + 9 * 3600, "wind_kph": 30.0, "vis_km": 6.0},
+                ]}
+            ]
+        }
+    }
+    out = _forecast_from_weatherapi(payload, target_epoch=base + 9 * 3600)
+    assert out["current"]["wind_speed_10m"] == 30.0
+    assert out["current"]["visibility"] == 6000.0
+    assert out["current"]["time"] == base + 9 * 3600
+
+
+def _future_window() -> TimeWindow:
+    start = _utc_now_hour() + timedelta(days=1)
+    return TimeWindow(start, start + timedelta(hours=6))
+
+
+def _utc_now_hour() -> datetime:
+    return datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def test_fetch_with_future_window_uses_forecast_and_skips_cache(
+    adapter: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def _fc(_la: float, _lo: float, target: int | None = None) -> dict:
+        seen["forecast_target"] = target
+        return {"current": {"wind_speed_10m": 44.0, "time": target}}
+
+    def _mar(_la: float, _lo: float, target: int | None = None) -> dict:
+        seen["marine_target"] = target
+        return {"current": {"wave_height": 3.1, "time": target}}
+
+    monkeypatch.setattr(adapter, "_fetch_forecast", _fc)
+    monkeypatch.setattr(adapter, "_fetch_marine", _mar)
+    monkeypatch.setattr(adapter, "_fetch_weatherapi", lambda *_a: None)
+    monkeypatch.setattr(adapter, "_fetch_gdacs_tc", lambda *_a: [])
+
+    win = _future_window()
+    res = adapter.fetch({"lat": 9.93, "lon": 76.26, "window": win})
+    assert res.status == "ok"
+    assert res.data["wind_speed_kmh"] == 44.0
+    assert res.data["wave_height_m"] == 3.1
+    assert seen["forecast_target"] is not None and seen["marine_target"] == seen["forecast_target"]
+
+    # A follow-up "right now" query for the same cell must NOT be served the
+    # forecast result from the cache.
+    now_fc = {"current": {"wind_speed_10m": 5.0}}
+    monkeypatch.setattr(adapter, "_fetch_forecast", lambda *_a: now_fc)
+    monkeypatch.setattr(adapter, "_fetch_marine", lambda *_a: {"current": {"wave_height": 0.4}})
+    res2 = adapter.fetch({"lat": 9.93, "lon": 76.26, "window": None})
+    assert res2.data["wind_speed_kmh"] == 5.0
+
+
+def test_fetch_future_window_beyond_horizon_degrades_to_unavailable(
+    adapter: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _fetch_forecast raising (e.g. _hourly_to_current found no samples for the
+    # window) must not fall back to current-moment data — FR-WX-4 for time.
+    _stub_sources(
+        monkeypatch, adapter, forecast=_raise, marine=_json("openmeteo_marine_kochi.json")
+    )
+    res = adapter.fetch({"lat": 9.93, "lon": 76.26, "window": _future_window()})
+    assert res.status == "unavailable"
+    assert res.data is None
 
 
 # --------------------------------------------------------------------------- #

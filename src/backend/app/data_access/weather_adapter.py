@@ -69,6 +69,7 @@ from app.core.config import get_settings
 from app.data_access import http_client
 from app.data_access.base import AdapterResult, DataSourceAdapter
 from app.data_access.http_client import RateLimitedError  # noqa: F401 (re-export)
+from app.schemas.common import TimeWindow
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +242,12 @@ class WeatherDataAdapter(DataSourceAdapter):
     # ------------------------------------------------------------------ #
     def fetch(self, params: dict[str, Any]) -> AdapterResult:
         """params: {"lat": float, "lon": float, "window": TimeWindow | None}.
-        window is currently unused (we report current conditions + active
-        alerts); it is accepted so the signature is stable for the forecast
-        range work in a later sprint."""
+
+        window None (or a window that already includes now) -> current
+        conditions, as before. A genuinely-future window (#171) -> the hourly
+        forecast for that time from Open-Meteo (or the WeatherAPI fallback),
+        selected server-side; if neither provider can forecast it, that leg
+        degrades to 'unavailable' rather than substituting current data."""
         now = _utcnow()
         try:
             lat = float(params["lat"])
@@ -252,17 +256,24 @@ class WeatherDataAdapter(DataSourceAdapter):
             logger.warning("WeatherDataAdapter.fetch: bad params %r", params)
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
 
+        target_epoch = _forecast_target_epoch(params.get("window"), now)
+        # ponytail: future-windowed fetches skip the result cache (it is keyed
+        # on lat/lon only and its #106 rationale is repeated *current*-condition
+        # bursts). Add a window bucket to _cache_key if forecast queries burst.
+        use_cache = target_epoch is None
+
         key = _cache_key(lat, lon)
-        cached = _cache_get(key, self._cache_ttl_s)
-        if cached is not None:
-            # Real data with its real timestamps (FR-WX-3) — see the cache note
-            # at the top of this module. Only 'ok' results are ever stored.
-            logger.debug("WeatherDataAdapter: cache hit for %s", key)
-            return cached
+        if use_cache:
+            cached = _cache_get(key, self._cache_ttl_s)
+            if cached is not None:
+                # Real data with its real timestamps (FR-WX-3) — see the cache
+                # note at the top of this module. Only 'ok' results are stored.
+                logger.debug("WeatherDataAdapter: cache hit for %s", key)
+                return cached
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            f_forecast = pool.submit(self._safe, self._fetch_forecast, lat, lon)
-            f_marine = pool.submit(self._safe, self._fetch_marine, lat, lon)
+            f_forecast = pool.submit(self._safe, self._fetch_forecast, lat, lon, target_epoch)
+            f_marine = pool.submit(self._safe, self._fetch_marine, lat, lon, target_epoch)
             f_wapi = pool.submit(self._safe, self._fetch_weatherapi, lat, lon)
             f_gdacs = pool.submit(self._safe, self._fetch_gdacs_tc, lat, lon)
             forecast = f_forecast.result()
@@ -276,9 +287,9 @@ class WeatherDataAdapter(DataSourceAdapter):
         if forecast is None:
             # #116: Open-Meteo's forecast leg 429s persistently from Render's
             # shared egress IP. The WeatherAPI payload already in hand carries
-            # the same current-conditions fields, so use it rather than losing
-            # the whole result (and with it the safety verdict).
-            fallback = _forecast_from_weatherapi(wapi_payload)
+            # the same wind/precip/visibility fields (current or hourly), so use
+            # it rather than losing the whole result (and the safety verdict).
+            fallback = _forecast_from_weatherapi(wapi_payload, target_epoch)
             if fallback is not None:
                 logger.warning(
                     "WeatherDataAdapter: Open-Meteo forecast unavailable — serving "
@@ -301,7 +312,8 @@ class WeatherDataAdapter(DataSourceAdapter):
             return AdapterResult(data=None, fetched_at=now, status="unavailable")
 
         result = AdapterResult(data=data, fetched_at=now, status="ok")
-        _cache_put(key, result, self._cache_ttl_s)
+        if use_cache:
+            _cache_put(key, result, self._cache_ttl_s)
         return result
 
     # ------------------------------------------------------------------ #
@@ -316,35 +328,65 @@ class WeatherDataAdapter(DataSourceAdapter):
             return params
         return {**params, "apikey": self._open_meteo_key}
 
-    def _fetch_forecast(self, lat: float, lon: float) -> dict[str, Any]:
-        r = _get(
+    _FORECAST_FIELDS = (
+        "wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation,visibility,weather_code"
+    )
+    _MARINE_FIELDS = "wave_height,wave_direction,wave_period"
+
+    def _fetch_forecast(
+        self, lat: float, lon: float, target_epoch: int | None = None
+    ) -> dict[str, Any]:
+        return self._fetch_open_meteo(
             "open-meteo/forecast",
             f"{self._forecast_base}/forecast",
-            params=self._open_meteo_params({
-                "latitude": lat,
-                "longitude": lon,
-                "current": (
-                    "wind_speed_10m,wind_gusts_10m,wind_direction_10m,"
-                    "precipitation,visibility,weather_code"
-                ),
-                "timeformat": "unixtime",
-                "wind_speed_unit": "kmh",
-            }),
+            {"wind_speed_unit": "kmh"},
+            self._FORECAST_FIELDS,
+            lat,
+            lon,
+            target_epoch,
         )
-        return r.json()
 
-    def _fetch_marine(self, lat: float, lon: float) -> dict[str, Any]:
-        r = _get(
+    def _fetch_marine(
+        self, lat: float, lon: float, target_epoch: int | None = None
+    ) -> dict[str, Any]:
+        return self._fetch_open_meteo(
             "open-meteo/marine",
             f"{self._marine_base}/marine",
-            params=self._open_meteo_params({
-                "latitude": lat,
-                "longitude": lon,
-                "current": "wave_height,wave_direction,wave_period",
-                "timeformat": "unixtime",
-            }),
+            {},
+            self._MARINE_FIELDS,
+            lat,
+            lon,
+            target_epoch,
         )
-        return r.json()
+
+    def _fetch_open_meteo(
+        self,
+        source: str,
+        url: str,
+        extra: dict[str, Any],
+        fields: str,
+        lat: float,
+        lon: float,
+        target_epoch: int | None,
+    ) -> dict[str, Any]:
+        """One Open-Meteo call. target_epoch None -> the `current` block, as
+        before. target_epoch set (#171: a genuinely-future time window) -> the
+        `hourly` series for that UTC day, collapsed back to the same
+        `{"current": {...}}` shape by picking the sample nearest target_epoch,
+        so _normalise() is unchanged."""
+        base = {"latitude": lat, "longitude": lon, "timeformat": "unixtime", **extra}
+        if target_epoch is None:
+            r = _get(source, url, params=self._open_meteo_params({**base, "current": fields}))
+            return r.json()
+        day = datetime.fromtimestamp(target_epoch, tz=UTC).date().isoformat()
+        r = _get(
+            source,
+            url,
+            params=self._open_meteo_params(
+                {**base, "hourly": fields, "start_date": day, "end_date": day}
+            ),
+        )
+        return _hourly_to_current(r.json().get("hourly"), target_epoch, fields.split(","))
 
     def _fetch_weatherapi(self, lat: float, lon: float) -> dict[str, Any] | None:
         """The whole forecast.json payload, or None if we could not fetch it
@@ -478,35 +520,86 @@ def _wapi_alerts(payload: dict[str, Any] | None) -> list[dict[str, Any]] | None:
     return (payload.get("alerts") or {}).get("alert") or []
 
 
-def _forecast_from_weatherapi(payload: dict[str, Any] | None) -> dict[str, Any] | None:
-    """WeatherAPI `current` -> the same shape Open-Meteo's forecast endpoint
-    returns, so _normalise() consumes it unchanged (#116).
-
-    None if the payload carries no usable wind speed — the fallback must be
-    able to fail, and a fallback that cannot supply the core field is not one.
+def _forecast_target_epoch(window: TimeWindow | None, now: datetime) -> int | None:
+    """#171: the instant to forecast for, as a unix epoch — or None when we
+    should just report current conditions. None when there is no window, or the
+    window already includes `now` (so "what's the weather now", which resolves
+    to a whole-day window, is unaffected). For a genuinely-future window we aim
+    at its midpoint — the planner has no clock-time parser, so a bare "tomorrow"
+    is a full-day window and its midday is the most representative single hour.
     """
-    if payload is None:
+    if window is None or window.start <= now:
         return None
-    cur = payload.get("current") or {}
-    wind = _as_float(cur.get("wind_kph"))
+    midpoint = window.start + (window.end - window.start) / 2
+    return int(midpoint.timestamp())
+
+
+def _hourly_to_current(
+    hourly: dict[str, Any] | None, target_epoch: int, fields: list[str]
+) -> dict[str, Any]:
+    """Reduce an Open-Meteo `hourly` block to the same `{"current": {...}}`
+    shape the `current` block has, picking the sample nearest target_epoch.
+    Raises (caught by _safe -> None -> status='unavailable') if the series has
+    no timestamps — an honest degrade beats substituting current-moment data
+    for a forecast that could not be computed (FR-WX-4, extended to time)."""
+    times = (hourly or {}).get("time") or []
+    if not times:
+        raise ValueError("forecast payload has no hourly timestamps")
+    idx = min(range(len(times)), key=lambda i: abs(int(times[i]) - target_epoch))
+    picked: dict[str, Any] = {"time": int(times[idx])}
+    for f in fields:
+        series = (hourly or {}).get(f) or []
+        picked[f] = series[idx] if idx < len(series) else None
+    return {"current": picked}
+
+
+def _wapi_block_to_forecast(block: dict[str, Any], time_epoch: Any) -> dict[str, Any] | None:
+    """A WeatherAPI `current` or hourly `hour` block (same field names) ->
+    the shape Open-Meteo's forecast endpoint returns, so _normalise() consumes
+    it unchanged (#116). None if there is no usable wind speed."""
+    wind = _as_float(block.get("wind_kph"))
     if wind is None:
         return None
-    vis_km = _as_float(cur.get("vis_km"))
+    vis_km = _as_float(block.get("vis_km"))
     return {
         "current": {
             "wind_speed_10m": wind,
-            "wind_gusts_10m": _as_float(cur.get("gust_kph")),
-            "wind_direction_10m": _as_float(cur.get("wind_degree")),
-            "precipitation": _as_float(cur.get("precip_mm")),
+            "wind_gusts_10m": _as_float(block.get("gust_kph")),
+            "wind_direction_10m": _as_float(block.get("wind_degree")),
+            "precipitation": _as_float(block.get("precip_mm")),
             "visibility": vis_km * 1000.0 if vis_km is not None else None,
             # NOT mapped from condition.code: WeatherAPI uses its own condition
             # scheme, not the WMO codes Open-Meteo returns, so passing it
             # through would be a number that silently means something else.
             # Nothing consumes weather_code today.
             "weather_code": None,
-            "time": cur.get("last_updated_epoch"),
+            "time": time_epoch,
         }
     }
+
+
+def _forecast_from_weatherapi(
+    payload: dict[str, Any] | None, target_epoch: int | None = None
+) -> dict[str, Any] | None:
+    """#116 fallback. target_epoch None -> the `current` block. target_epoch set
+    (#171) -> the hourly `hour` nearest it, out of forecast.forecastday[].hour[]
+    (already fetched: `days=3`). None if the payload carries no usable data —
+    a fallback that cannot supply the core field is not one."""
+    if payload is None:
+        return None
+    if target_epoch is None:
+        cur = payload.get("current") or {}
+        return _wapi_block_to_forecast(cur, cur.get("last_updated_epoch"))
+    hours = [
+        h
+        for day in (payload.get("forecast") or {}).get("forecastday", [])
+        for h in (day.get("hour") or [])
+        if h.get("time_epoch") is not None
+    ]
+    if not hours:
+        return None
+    h = min(hours, key=lambda x: abs(int(x["time_epoch"]) - target_epoch))
+    return _wapi_block_to_forecast(h, h.get("time_epoch"))
 
 
 def _alert_strings(
