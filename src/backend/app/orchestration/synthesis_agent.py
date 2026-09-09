@@ -93,6 +93,20 @@ logger = logging.getLogger(__name__)
 
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# #173 interim fix: this pipeline has no route/waypoint concept — every
+# specialist agent evaluates one resolved point, never a path. When
+# plan.route_query_detected is set (planner_agent.route_query()), append this
+# deterministically rather than asking the LLM to phrase it, so it can never
+# be dropped by a citation-coverage regeneration or the no-LLM/degraded
+# fallbacks below. Same principle as #121's "never show a verdict Synthesis
+# couldn't explain" — a route question must not get a badge that implies the
+# whole journey was checked.
+_ROUTE_CAVEAT_TEXT = (
+    "Note: only the location above was checked, not the full route between "
+    "origin and destination — this system does not yet evaluate conditions "
+    "along a path."
+)
+
 # --- compose()'s own budget (#133) --------------------------------------- #
 # Nothing used to bound a single generate_content call: the client was built
 # without a timeout, so when one stalled it ran until graph.py's node timeout
@@ -503,6 +517,16 @@ def _contains_phrase(text: str, phrase: str) -> bool:
     return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", text) is not None
 
 
+def _with_route_caveat(text: str, plan: ExecutionPlan) -> str:
+    """Appends _ROUTE_CAVEAT_TEXT when the Planner flagged this as a route
+    query (#173). Applied at every terminal response builder (LLM-composed,
+    no-LLM deterministic, and degraded) so the caveat survives regardless of
+    which path produced the answer."""
+    if not plan.route_query_detected:
+        return text
+    return f"{text} {_ROUTE_CAVEAT_TEXT}" if text else _ROUTE_CAVEAT_TEXT
+
+
 def _extract_data_timestamp(result: object) -> datetime:
     """Pulls a citation timestamp from an agent result. Falls back to now()
     (UTC) only if the result genuinely has none — real LLD dataclasses all
@@ -609,7 +633,7 @@ class SynthesisAgent:
         a cached one so a cache hit can't drift from a live answer; the trace is
         rebuilt from the CURRENT plan rather than whatever was cached."""
         return ComposedResponse(
-            text=" ".join(s["text"] for s in sentences),
+            text=_with_route_caveat(" ".join(s["text"] for s in sentences), plan),
             citations=self._build_citations(sentences, available_results),
             # TODO(P2, Issue #14): populate from geofence/ocean results once
             # real agents land — coordinate exact marker/zone shape with P6
@@ -968,7 +992,7 @@ class SynthesisAgent:
             "Synthesis: composed %d sentences without the LLM (#139).", len(sentences)
         )
         return ComposedResponse(
-            text=" ".join(s["text"] for s in sentences),
+            text=_with_route_caveat(" ".join(s["text"] for s in sentences), plan),
             citations=self._build_citations(sentences, available_results),
             map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),
@@ -1012,7 +1036,7 @@ class SynthesisAgent:
                 "location right now. Please try again shortly."
             )
         return ComposedResponse(
-            text=text,
+            text=_with_route_caveat(text, plan),
             citations=[],
             map_payload=self._build_map_payload(plan, available_results),
             trace=list(plan.trace),

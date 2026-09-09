@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -113,12 +114,21 @@ rather than guessing.
 AREA — i.e. it wants a LIST or COMPARISON of regions/zones ("which regions \
 show...", "which fishing zones should be avoided", "areas where..."). \
 Return "area" for the list/compare case, otherwise "point".
+- Whether the query names TRAVEL between two distinct places — an origin and \
+a destination, or a named route — rather than asking about one location \
+("route from X to Y", "traveling/sailing from X to Y", "is the way from X \
+to Y safe"). Return true for route_query in that case, even though you \
+should still resolve/return only ONE location (whichever the query most \
+clearly anchors on, typically the origin) in place_name/lat/lon above — this \
+system does not yet evaluate a full path, only a single point, and the \
+caller needs to know that a route was asked for so it can say so honestly.
 
 Respond with ONLY a JSON object, no other text, matching this shape:
 {"location_resolvable": bool, "place_name": str|null, "lat": float|null, \
 "lon": float|null, "time_window_text": str|null, "intent_weather": bool, \
 "intent_safety": bool, "intent_fishing": bool, "intent_boundary": bool, \
-"intent_keywords": [str, ...], "scope": "point"|"area", "confidence": float}
+"intent_keywords": [str, ...], "scope": "point"|"area", \
+"route_query": bool, "confidence": float}
 """
 
 
@@ -149,6 +159,13 @@ class QueryEntities:
     # the ocean/geofencing invocations; the graph nodes then also call their
     # list-nearby methods, not just the single-point ones.
     scope: str = "point"
+    # #173 interim fix: true when the query names travel between two places
+    # (an origin + destination, or a named route) rather than one location.
+    # The pipeline still only resolves/evaluates a single point — this flag
+    # exists so route_query() can flag that gap in the trace and
+    # SynthesisAgent can attach an honest caveat, instead of a route question
+    # silently getting a single-point verdict that looks like full coverage.
+    route_query: bool = False
     # Raw keywords for the trace/debugging (FR-PLAN-4) — not itself used for
     # routing; the three intent_* booleans above are what route_query() reads.
     intent_keywords: list[str] = field(default_factory=list)
@@ -296,6 +313,7 @@ class PlannerAgent:
             intent_boundary=bool(data.get("intent_boundary", False)),
             confidence=float(data.get("confidence", 0.0)),
             scope="area" if data.get("scope") == "area" else "point",
+            route_query=bool(data.get("route_query", False)),
             intent_keywords=list(data.get("intent_keywords", [])),
         )
 
@@ -417,6 +435,7 @@ class PlannerAgent:
         matched = weather_matched + safety_matched + _matches(fishing_kw) + _matches(boundary_kw)
 
         return QueryEntities(
+            route_query=_looks_like_route_query(text),
             location_resolvable=False,
             place_name=None,
             lat=None,
@@ -445,6 +464,21 @@ class PlannerAgent:
 # returns the ExecutionPlan. Kept as a free function (not a method) so it's
 # trivially unit-testable without constructing a PlannerAgent at all.
 # ---------------------------------------------------------------------- #
+
+
+# #173 interim fix: cheap regex heuristic for the keyword-fallback path
+# (LLM down — see _extract_via_keywords). Not meant to be as good as the LLM
+# extraction above; it only has to catch the common phrasings well enough
+# that a degraded extraction doesn't silently drop the route caveat too.
+_ROUTE_QUERY_PATTERN = re.compile(
+    r"\b(?:from\s+.+?\s+to\s+.+|route\s+(?:to|from|between)|"
+    r"way\s+(?:to|from)|travel(?:l?ing)?\s+to|sail(?:ing)?\s+to|"
+    r"voyage\s+to)\b"
+)
+
+
+def _looks_like_route_query(lowercase_text: str) -> bool:
+    return bool(_ROUTE_QUERY_PATTERN.search(lowercase_text))
 
 
 def _usable_location(location: dict | None) -> dict | None:
@@ -482,6 +516,18 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
         only case) this was an informational-only query.
     """
     invocations: list[AgentInvocationRequest] = []
+
+    if entities.route_query:
+        # #173: no route/waypoint concept exists anywhere in this pipeline —
+        # every specialist agent below takes a single LatLon. Flag it on the
+        # plan (not just the trace) so SynthesisAgent can attach an honest
+        # caveat to whatever verdict comes out, rather than a route question
+        # getting a single-point badge that reads as full-journey coverage.
+        trace.append(
+            "Planner: query is phrased as travel between two points (route) "
+            "-> only the resolved point below is checked, not the full path "
+            "(#173, no route support yet)"
+        )
 
     if entities.intent_weather or entities.intent_safety:
         why = (
@@ -561,4 +607,6 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
             "query only, Risk/Safety Agent not invoked"
         )
 
-    return ExecutionPlan(invocations=invocations, trace=trace)
+    return ExecutionPlan(
+        invocations=invocations, trace=trace, route_query_detected=entities.route_query
+    )

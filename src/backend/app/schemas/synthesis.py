@@ -32,6 +32,14 @@ class ExecutionPlan:
     # the user as the turn's response instead of running any agents.
     needs_clarification: bool = False
     clarification_prompt: str | None = None
+    # #173 interim fix: true when the query is phrased as travel between two
+    # points ("route from X to Y", "sailing from X to Y") but the pipeline has
+    # no route/waypoint concept — every specialist agent below only ever
+    # evaluates the single resolved location. Set by route_query() in
+    # planner_agent.py; read by SynthesisAgent to attach an honesty caveat so
+    # a single-point verdict is never presented as if it covered the whole
+    # journey (see that issue's "Suggested scope", point 3).
+    route_query_detected: bool = False
 
 
 @dataclass
