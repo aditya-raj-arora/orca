@@ -61,6 +61,38 @@ services:
       # don't need a Render override.
       - key: WEATHERAPI_KEY
         sync: false
+      # Rate-limit protection for the keyless Open-Meteo tier (#106). Deployed
+      # traffic is what actually hits the quota — a burst of queries about the
+      # same harbour is what produced the 429 this exists to stop — so the
+      # value is pinned here rather than left to the config.py default, to make
+      # it visible and tunable without a code change. 0 disables the cache.
+      - key: WEATHER_CACHE_TTL_SECONDS
+        value: "600"
+      # Open-Meteo commercial key (#116). Render's free plan gives us no
+      # dedicated egress IP, and Open-Meteo meters its keyless tier per client
+      # IP — so we share a quota with every other free service on the node and
+      # see 429s we did not cause and cannot avoid by behaving well. This is
+      # the only actual fix; the cache and cooldown above just keep us quiet
+      # while it is unset. Leave unset (sync:false, no value) until someone
+      # buys a plan, and if you set it, ALSO override the three base URLs to
+      # the `customer-` hosts or the key is ignored — see docs/DEPLOYMENT.md.
+      - key: OPEN_METEO_API_KEY
+        sync: false
+      # The other way out of per-IP metering (#151): a static-egress proxy, so
+      # the Open-Meteo quota is measured against an address only we use instead
+      # of Render's shared node IP. Optional and paid; unset, nothing is
+      # proxied. Contains credentials, hence sync:false — and check the
+      # dedicated-vs-shared-IP warning in docs/DEPLOYMENT.md before buying,
+      # since a shared pool just swaps one set of noisy neighbours for another.
+      - key: OUTBOUND_PROXY_URL
+        sync: false
+      # Planner place-name -> coordinates (#110). Pinned here because the wrong
+      # value is silently wrong rather than broken: without the country filter
+      # "Kochi" resolves to Kochi, JAPAN and every agent then answers
+      # confidently about the wrong country. GEOCODING_BASE_URL is left to its
+      # config.py default like the other base URLs.
+      - key: GEOCODING_COUNTRY_CODE
+        value: IN
       - key: INCOIS_BASE_URL
         value: https://incois.gov.in
       - key: GIS_BOUNDARY_DATA_PATH

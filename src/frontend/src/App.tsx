@@ -1,17 +1,7 @@
-/**
- * Top-level layout: chat panel + map panel + agent-trace panel.
- *
- * Owners: P5 (Chat, split left) + P6 (Map/Trace, split right) — split layout
- * ownership matches CODEOWNERS. Coordinate on the shared shell below rather
- * than each rewriting App.tsx independently.
- *
- * Reference: HLD v1.0 §3 "Web Client", FR-UI-1 to FR-UI-4.
- */
 import { useState, useEffect } from "react";
 import ChatPanel from "./components/Chat/ChatPanel";
 import MapPanel from "./components/Map/MapPanel";
 import type { MarkerData, ZoneData } from "./components/Map/MapPanel";
-import TraceViewer from "./components/TraceViewer/TraceViewer";
 import { MAP_UPDATE_EVENT, normalizeMapPayload } from "./api/mapPayload";
 
 export default function App() {
@@ -21,6 +11,10 @@ export default function App() {
   });
   const [markers, setMarkers] = useState<MarkerData[]>([]);
   const [zones, setZones] = useState<ZoneData[]>([]);
+  const [weatherError, setWeatherError] = useState(false);
+  const [oceanError, setOceanError] = useState(false);
+  const [geofenceError, setGeofenceError] = useState(false);
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   useEffect(() => {
     if (isDark) {
@@ -32,7 +26,6 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Fix for Leaflet map glitching when toggled from display: none
   useEffect(() => {
     const timer = setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
@@ -40,22 +33,40 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [showMobileMap]);
 
-  // ChatPanel owns the single wsClient connection (LLD §5.2 — one query per
-  // connection, session-scoped) and re-broadcasts each final_response's
-  // map_payload as a window event, mirroring its existing trace_update
-  // dispatch. Listening here keeps the map on live results without opening a
-  // second socket against the same backend.
   useEffect(() => {
     const handleMapUpdate = (event: Event) => {
-      const { markers: nextMarkers, zones: nextZones } = normalizeMapPayload(
-        (event as CustomEvent<unknown>).detail
-      );
+interface OrcaEventDetail {
+  weatherError?: boolean;
+  oceanError?: boolean;
+  geofenceError?: boolean;
+  weather_error?: boolean;
+  ocean_error?: boolean;
+  geofence_error?: boolean;
+}
+
+const detail = (event as CustomEvent<OrcaEventDetail>).detail;
+      const { markers: nextMarkers, zones: nextZones } = normalizeMapPayload(detail);
       setMarkers(nextMarkers);
       setZones(nextZones);
+      if (detail) {
+        setWeatherError(!!detail.weather_error || !!detail.weatherError);
+        setOceanError(!!detail.ocean_error || !!detail.oceanError);
+        setGeofenceError(!!detail.geofence_error || !!detail.geofenceError);
+      }
     };
 
+    const handleWsClose = () => setIsDisconnected(true);
+    const handleWsOpen = () => setIsDisconnected(false);
+
     window.addEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
-    return () => window.removeEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
+    window.addEventListener('orca_ws_close', handleWsClose);
+    window.addEventListener('orca_ws_open', handleWsOpen);
+
+    return () => {
+      window.removeEventListener(MAP_UPDATE_EVENT, handleMapUpdate);
+      window.removeEventListener('orca_ws_close', handleWsClose);
+      window.removeEventListener('orca_ws_open', handleWsOpen);
+    };
   }, []);
 
   return (
@@ -115,8 +126,8 @@ export default function App() {
               </svg>
             )}
           </button>
-          <div className="status-dot" style={{marginLeft: '0.5rem'}}></div>
-          <span>System Online</span>
+          <div className="status-dot" style={{marginLeft: '0.5rem', backgroundColor: isDisconnected ? '#ef4444' : '#10b981'}}></div>
+          <span>{isDisconnected ? "Disconnected - Reconnecting..." : "System Online"}</span>
         </div>
       </header>
       
@@ -125,8 +136,19 @@ export default function App() {
           <ChatPanel />
         </div>
         <div className="glass-panel map-trace-container">
-          <MapPanel markers={markers} zones={zones} />
-          <TraceViewer />
+          {/* #177: the agent trace lives in ChatPanel now — a live progress
+              indicator while a query runs, then a collapsed per-answer
+              disclosure — driven by real trace_update events. A separate
+              TraceViewer used to render here showing hardcoded mock steps
+              that never changed; removed rather than fixed, since it wasn't
+              a smaller version of the real feature. */}
+          <MapPanel
+            markers={markers}
+            zones={zones}
+            weatherError={weatherError}
+            oceanError={oceanError}
+            geofenceError={geofenceError}
+          />
         </div>
       </div>
     </div>

@@ -35,5 +35,4 @@
 
 # P6 — Frontend Engineer (Map/Trace) + QA/Integration Lead
 /src/frontend/src/components/Map/      @swatisaumya
-/src/frontend/src/components/TraceViewer/  @swatisaumya
 /docker-compose.yml                    @swatisaumya

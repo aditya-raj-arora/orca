@@ -13,9 +13,11 @@ import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.agents.weather_agent import WeatherAgent
+from app.data_access import weather_adapter as wa
 from app.data_access.base import AdapterResult
 from app.data_access.weather_adapter import (
     _GDACS_NS,
@@ -31,11 +33,17 @@ SAMPLES = Path(__file__).resolve().parents[3] / "docs" / "samples" / "weather"
 
 
 def _json(name: str) -> dict:
-    return json.loads((SAMPLES / name).read_text())
+    return json.loads((SAMPLES / name).read_text(encoding="utf-8"))
 
 
 def _text(name: str) -> str:
-    return (SAMPLES / name).read_text()
+    # Explicit encoding, not the platform default (#97): gdacs_tc_rss.xml is a
+    # real captured payload with a leading UTF-8 BOM. A bare read_text() picks
+    # up the OS locale encoding (cp1252 on Windows), which mis-decodes the BOM
+    # into 3 garbage chars and breaks ET.fromstring. httpx (and every other
+    # UTF-8 reader) decodes this file fine — only a locale-dependent read was
+    # broken, matching what the real GDACS feed sends.
+    return (SAMPLES / name).read_text(encoding="utf-8")
 
 
 def _raise(*_a: object) -> object:
@@ -217,8 +225,34 @@ def test_parse_gdacs_tc_filters_by_distance() -> None:
     assert far == []
 
 
-def test_parse_gdacs_tc_bad_xml_returns_empty() -> None:
-    assert _parse_gdacs_tc("<not-xml", 9.9, 76.3) == []
+def test_parse_gdacs_tc_bad_xml_raises_rather_than_claiming_no_cyclones() -> None:
+    """#147 — this test used to assert `== []`, which was the bug.
+
+    _normalise() reads None as "alert source not checked" and [] as "checked,
+    nothing active". Returning [] for a feed we could not parse reported an
+    unreadable cyclone feed as "no cyclones nearby": it could silently drop a
+    live TC alert, and — if WeatherAPI was also down — make
+    alerts_source_available claim both sources were checked when neither was.
+
+    Raising lets _safe() turn it into None, which is what "we don't know"
+    means here (NFR-REL-2)."""
+    with pytest.raises(ET.ParseError):
+        _parse_gdacs_tc("<not-xml", 9.9, 76.3)
+
+
+def test_an_unparseable_feed_leaves_the_alert_source_unchecked() -> None:
+    """The consequence that matters, asserted end-to-end through _normalise:
+    a broken GDACS feed must not be able to pass off "no alerts" as checked."""
+    normalised = _normalise(
+        {"current": {"wind_speed_10m": 10.0, "time": 1788264000}},
+        {"current": {"wave_height": 0.5, "time": 1788264000}},
+        None,  # WeatherAPI unavailable too
+        None,  # what _safe() hands us for an unparseable GDACS feed
+        "open-meteo",
+    )
+
+    assert normalised["alerts_source_available"] is False
+    assert normalised["active_alerts"] == []  # empty, but flagged as UNKNOWN above
 
 
 # --------------------------------------------------------------------------- #
@@ -241,9 +275,17 @@ def _stub_sources(
     def _fn(val: object):
         return (lambda _la, _lo: _raise()) if val is _raise else (lambda _la, _lo: val)
 
+    def _wapi_payload(val: object):
+        """_fetch_weatherapi returns the whole forecast.json payload (#116), but
+        these tests care about the alerts leg, so a list is wrapped into the
+        payload shape here. None still means "couldn't check at all"."""
+        if val is _raise or val is None:
+            return val
+        return {"alerts": {"alert": val}}
+
     monkeypatch.setattr(ad, "_fetch_forecast", _fn(forecast))
     monkeypatch.setattr(ad, "_fetch_marine", _fn(marine))
-    monkeypatch.setattr(ad, "_fetch_weatherapi_alerts", _fn(wapi))
+    monkeypatch.setattr(ad, "_fetch_weatherapi", _fn(_wapi_payload(wapi)))
     monkeypatch.setattr(ad, "_fetch_gdacs_tc", _fn([] if gdacs == () else gdacs))
 
 
@@ -324,3 +366,60 @@ def test_agent_over_adapter_end_to_end_stubbed(monkeypatch: pytest.MonkeyPatch) 
     assert r.wave_height_m >= 0
     assert r.data_timestamp is not None
     assert r.data_timestamp.tzinfo is not None
+
+
+# --------------------------------------------------------------------------- #
+# #147 — the GDACS feed is global and 1.5 MB; fetching it per query was both
+# the bulk of this leg's latency and the whole of our exposure to a transient
+# unreadable response.
+# --------------------------------------------------------------------------- #
+
+
+def _gdacs_rss(event_lat: float = 9.9, event_lon: float = 76.3) -> str:
+    return f"""<rss xmlns:gdacs="http://www.gdacs.org"
+                    xmlns:geo="http://www.w3.org/2003/01/geo/wgs84_pos#">
+      <channel><item>
+        <gdacs:eventtype>TC</gdacs:eventtype>
+        <gdacs:eventname>TestCyclone</gdacs:eventname>
+        <gdacs:alertlevel>Orange</gdacs:alertlevel>
+        <geo:Point><geo:lat>{event_lat}</geo:lat><geo:long>{event_lon}</geo:long></geo:Point>
+      </item></channel>
+    </rss>"""
+
+
+def test_the_global_feed_is_fetched_once_and_reused(
+    adapter: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One entry serves every location — only the radius filter is per query."""
+    calls = {"n": 0}
+
+    def _fake_get(source, url, **kwargs):
+        calls["n"] += 1
+        return httpx.Response(200, text=_gdacs_rss(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(wa, "_get", _fake_get)
+
+    near = adapter._fetch_gdacs_tc(9.9, 76.3)
+    far = adapter._fetch_gdacs_tc(-40.0, 10.0)  # different location, same feed
+
+    assert calls["n"] == 1
+    assert near and not far  # filtered per query, not served from one another
+
+
+def test_an_unparseable_feed_is_not_cached(
+    adapter: WeatherDataAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Storing before parsing would pin a broken feed for the whole TTL, so a
+    transient bad response would keep every later query from seeing cyclones."""
+    bodies = ["<not-xml", _gdacs_rss()]
+
+    def _fake_get(source, url, **kwargs):
+        return httpx.Response(200, text=bodies.pop(0), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(wa, "_get", _fake_get)
+
+    with pytest.raises(ET.ParseError):
+        adapter._fetch_gdacs_tc(9.9, 76.3)
+
+    # The retry refetches instead of replaying the broken body.
+    assert adapter._fetch_gdacs_tc(9.9, 76.3)

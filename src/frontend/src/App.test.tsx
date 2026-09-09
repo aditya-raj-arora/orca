@@ -1,6 +1,6 @@
 /**
  * Smoke test — keeps CI green from Day 1. Owner: P6 (QA/Integration Lead).
- * Expand real component coverage as ChatPanel/MapPanel/TraceViewer land
+ * Expand real component coverage as ChatPanel/MapPanel land
  * (see their TODO comments for behaviour to test).
  */
 import { describe, expect, it } from "vitest";

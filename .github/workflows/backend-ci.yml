@@ -40,6 +40,15 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      # Includes tests/integration/ (issue #36). The LLD §6 failure-matrix
+      # rows run here — they fault httpx at the transport and fail loudly on
+      # any unrouted call, so they never touch the network. The live E2E rows
+      # (tests/integration/test_live_e2e.py) skip themselves unless
+      # ORCA_RUN_LIVE_TESTS=1 and an LLM key are set, which CI deliberately
+      # does not provide: a required check must not depend on a third party's
+      # uptime or on paid LLM quota. Run those locally before a demo:
+      #   ORCA_RUN_LIVE_TESTS=1 LLM_API_KEY=... pytest tests/integration -v
+      #   python ../../scripts/e2e_live_check.py
       - name: Test (pytest)
         run: pytest --maxfail=1 -q
 

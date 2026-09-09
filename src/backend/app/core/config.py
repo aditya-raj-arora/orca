@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     bhashini_user_id: str = ""
     bhashini_base_url: str = "https://bhashini.gov.in/api"
 
+    # Sarvam AI — substitute ASR/TTS/Lang-ID provider (Bhashini sandbox access
+    # blocked as of 2026-09-04; see app/language/bhashini_client.py module
+    # docstring and docs/CREDENTIALS.md #2). Flagged for P1 confirmation.
+    sarvam_api_key: str = ""
+
     # Weather / marine (owner P3, docs/p3-data-source-spike.md §2). All card-free;
     # only weatherapi_key needs a (free, no-card) key. weather_api_key /
     # weather_api_base_url are retained but unused — the OpenWeather plan was
@@ -46,6 +51,47 @@ class Settings(BaseSettings):
     weatherapi_base_url: str = "https://api.weatherapi.com/v1"
     weatherapi_key: str = ""
     gdacs_base_url: str = "https://www.gdacs.org/xml"
+    # Place name -> coordinates for the Planner (#110). Keyless, same provider
+    # as forecast/marine. geocoding_country_code constrains the search: without
+    # it "Kochi" resolves to Kochi, JAPAN rather than Kochi, India — see
+    # data_access/geocoding_adapter.py's module docstring before changing it.
+    # "" searches globally.
+    geocoding_base_url: str = "https://geocoding-api.open-meteo.com/v1"
+    geocoding_country_code: str = "IN"
+    # Rate-limit protection for the keyless Open-Meteo tier (#106). Repeat
+    # queries about the same ~5 km cell inside this window are served from
+    # WeatherDataAdapter's in-process cache instead of spending quota. 10 min
+    # sits under Open-Meteo's ~15 min model refresh, so a cache hit is never
+    # older than the numbers a live call would have returned. Set to 0 to
+    # disable the cache entirely (every fetch goes upstream).
+    weather_cache_ttl_seconds: float = 600.0
+    # Open-Meteo commercial key (#116). Empty = the keyless tier, which is
+    # metered per CLIENT IP — and on Render's free plan that IP is shared with
+    # every other service on the node, so the quota can be exhausted by traffic
+    # that isn't ours and 429s look permanent. A key moves forecast / marine /
+    # geocoding onto the account's own quota, but ONLY on the `customer-`
+    # hosts: setting this WITHOUT also pointing the three base URLs below at
+    # customer-api.open-meteo.com / customer-marine-api.open-meteo.com /
+    # customer-geocoding-api.open-meteo.com leaves the key ignored (the adapter
+    # logs a warning if you do). Costs money — see docs/DEPLOYMENT.md before
+    # setting it.
+    open_meteo_api_key: str = ""
+
+    # The other way out of IP metering (#151): route the metered calls through
+    # a static egress IP (e.g. Fixie) so the quota is measured against an
+    # address only we use, instead of Render's shared node IP. Unset, nothing
+    # changes and every call goes out directly.
+    #
+    # CONTAINS CREDENTIALS (http://user:pass@host:port) — env only, never
+    # committed, and never logged. data_access/http_client.py is careful not
+    # to put it in a message; keep it that way.
+    #
+    # Deliberately scoped to a source prefix rather than applied to all
+    # outbound traffic: only Open-Meteo is metered per client IP. GDACS is a
+    # 1.5 MB feed and WeatherAPI is metered per key, so putting either on a
+    # bandwidth-metered proxy spends the plan for no benefit.
+    outbound_proxy_url: str = ""
+    outbound_proxy_sources: str = "open-meteo/"
 
     incois_base_url: str = "https://incois.gov.in"
     incois_geoserver_url: str = "https://incois.gov.in/geoserver/PFZ-TUNA-SST-CHL"

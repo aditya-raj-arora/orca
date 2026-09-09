@@ -59,12 +59,34 @@ class GeofencingAgent:
         self._imbl_buffer_km = s.imbl_buffer_km
         self._nearby_radius_km = s.geofence_nearby_radius_km  # issue #174
 
-    def check(self, location: LatLon) -> GeofenceResult:
+    def check(self, location: LatLon) -> GeofenceResult | None:
+        """None when the boundary dataset can't be read (#99 defect 2).
+
+        Deviates from the LLD §2.5 signature (`-> GeofenceResult`) the same
+        way OceanAgent.get_nearest_pfz does, and for the same reason: an
+        unavailable result needs to be distinguishable from a negative one,
+        and GeofenceResult has no status field to carry that. It previously
+        returned within_mpa=False / within_imbl_buffer=False on an adapter
+        failure, which is a fabricated "you are not in a restricted zone" —
+        indistinguishable downstream from a genuine all-clear, so Figure 2
+        step 2 fell through and the verdict came back SAFE with no boundary
+        data at all (NFR-REL-2, FR-RISK-3).
+
+        None is the sentinel the rest of the pipeline already understands:
+        graph._geofencing_node passes `unavailable=None`, and
+        RiskSafetyAgent.evaluate's `if geofence is None` branch already
+        returns INSUFFICIENT_DATA. No shared-schema change was needed
+        (CONTRIBUTING §6), which is why this was preferred over adding a
+        status field to GeofenceResult."""
         point = Point(location.lon, location.lat)  # Shapely is (x=lon, y=lat)
 
-        within_mpa, mpa_name = self._check_mpa(point)
-        within_imbl, imbl_dist = self._check_imbl(location)
+        mpa = self._check_mpa(point)
+        imbl = self._check_imbl(location)
+        if mpa is None or imbl is None:
+            return None
 
+        within_mpa, mpa_name = mpa
+        within_imbl, imbl_dist = imbl
         return GeofenceResult(
             within_imbl_buffer=within_imbl,
             imbl_distance_km=imbl_dist,
@@ -72,14 +94,11 @@ class GeofencingAgent:
             mpa_name=mpa_name,
         )
 
-    def _check_mpa(self, point: Point) -> tuple[bool, str | None]:
+    def _check_mpa(self, point: Point) -> tuple[bool, str | None] | None:
+        """None if the MPA data is unavailable — see check()."""
         result = self._adapter.fetch({"type": "MPA"})
         if result.status != "ok" or not result.data:
-            # Adapter unavailable — degrade honestly rather than fabricate a
-            # False. The Risk/Safety Agent's missing-data path (Figure 2) is
-            # what's supposed to catch this upstream; flag to P4/P1 if this
-            # needs a dedicated "unavailable" signal on GeofenceResult itself.
-            return False, None
+            return None
 
         for feature in result.data["features"]:
             polygon = shape(json.loads(feature["geometry"]))
@@ -87,10 +106,11 @@ class GeofencingAgent:
                 return True, feature["name"]
         return False, None
 
-    def _check_imbl(self, location: LatLon) -> tuple[bool, float]:
+    def _check_imbl(self, location: LatLon) -> tuple[bool, float] | None:
+        """None if the IMBL data is unavailable — see check()."""
         result = self._adapter.fetch({"type": "IMBL"})
         if result.status != "ok" or not result.data or not result.data["features"]:
-            return False, float("inf")
+            return None
 
         min_dist = min(
             (

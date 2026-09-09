@@ -56,6 +56,45 @@ logger = logging.getLogger(__name__)
 # one, never left to hang the query.
 AGENT_TIMEOUT_SECONDS = 6.0
 
+# Synthesis gets its own, larger budget (#118). AGENT_TIMEOUT_SECONDS is sized
+# for a specialist making one bounded HTTP call; SynthesisAgent.compose() makes
+# up to TWO sequential Gemini round trips — the initial generation plus a full
+# regeneration when the citation-coverage / phrasing safety checks reject the
+# first (synthesis_agent.py). At 6s the regeneration had almost no budget left,
+# so a tripped safety check became a timeout and the user got the degraded
+# "couldn't put together an answer" string instead of a real response.
+#
+# Deliberately a separate constant rather than raising AGENT_TIMEOUT_SECONDS:
+# 6s is correct for the specialists, and loosening it would let one slow
+# external API eat the whole query budget, which is precisely what that
+# constant exists to prevent.
+# Raised from 10.0 to clear Gemini's minimum request deadline (#135): the API
+# refuses a deadline under 10s, so a single call may legitimately run that long,
+# and a 10s backstop would kill compose() on the very call it was budgeted for —
+# discarding the degraded-but-useful response #133 exists to return.
+SYNTHESIS_TIMEOUT_SECONDS = 12.0
+
+# Weather gets its own budget too (#131), for the same reason Synthesis does:
+# AGENT_TIMEOUT_SECONDS is sized for a specialist making ONE bounded HTTP call,
+# and the weather node is not that. It fans out to four external sources
+# (forecast, marine, WeatherAPI, GDACS) and then, when Open-Meteo 429s from
+# Render's shared egress IP, assembles the WeatherAPI fallback leg (#116/#117)
+# — work that by definition only starts after a source has already spent its
+# http_client.SOURCE_BUDGET_S failing.
+#
+# At 6s that left ~1s for the fallback, the JSON/RSS parsing and thread
+# scheduling, on a free-tier box sharing one core with the rest of the graph.
+# It wasn't enough: the deployed backend timed the node out at 6.0s and the
+# WeatherAPI fallback landed 104ms later, so a query that HAD recovered its
+# weather data threw it away and answered INSUFFICIENT_DATA anyway.
+#
+# Sized as SOURCE_BUDGET_S plus real headroom, not as "6 wasn't enough, try 8":
+# a source can no longer outlive its own budget (that was the other half of
+# #131), so the slowest leg lands at ~5s and everything after it has 3s.
+# test_graph.py pins that relationship so the two constants can't drift apart
+# again in a comment-only coupling.
+WEATHER_TIMEOUT_SECONDS = 8.0
+
 
 def _merge_dicts(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Reducer for GraphState.results: the three specialist nodes run in
@@ -72,6 +111,12 @@ class GraphState(TypedDict, total=False):
     plan: ExecutionPlan
     results: Annotated[dict[str, Any], _merge_dicts]
     composed: ComposedResponse
+    # False when Synthesis degraded to the _unavailable_composed_response()
+    # sentinel (#121). The Gateway must not render a verdict badge for a
+    # response it could not explain — see main._final_response(). Internal to
+    # the graph, deliberately not on the ComposedResponse contract, so this
+    # needs no contract-change broadcast (CONTRIBUTING.md §6).
+    synthesis_ok: bool
     # Human-readable step log for FR-PLAN-4 / FR-UI-3 (the WebSocket
     # trace_update stream, LLD §5.2, is built by replaying this list).
     trace: Annotated[list[str], operator.add]
@@ -84,20 +129,49 @@ def _agent_requested(state: GraphState, agent_name: str) -> bool:
     return any(inv.agent_name == agent_name for inv in plan.invocations)
 
 
-async def _call_bounded(fn: Any, *args: Any, unavailable: Any, agent_label: str) -> tuple[Any, str]:
+async def _call_bounded(
+    fn: Any,
+    *args: Any,
+    unavailable: Any,
+    agent_label: str,
+    timeout: float | None = None,
+) -> tuple[Any, str]:
     """Runs a (synchronous, per the LLD's agent method signatures) agent call
-    in a worker thread, bounded by AGENT_TIMEOUT_SECONDS. Returns
+    in a worker thread, bounded by `timeout` (AGENT_TIMEOUT_SECONDS unless the
+    caller overrides it — see SYNTHESIS_TIMEOUT_SECONDS). Returns
     (result_or_unavailable, trace_line) — never raises, per LLD §6: a failed
     or timed-out agent must degrade to an 'unavailable' result, not crash the
-    query or the whole orchestration graph."""
+    query or the whole orchestration graph.
+
+    `timeout=None` resolves to AGENT_TIMEOUT_SECONDS *at call time*, not as a
+    default-argument value: a default would bind the module global once at
+    import, and tests/integration/test_failure_matrix.py patches that global
+    down to make the timeout row run fast. Binding it early silently disabled
+    that patch."""
+    if timeout is None:
+        timeout = AGENT_TIMEOUT_SECONDS
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(fn, *args), timeout=AGENT_TIMEOUT_SECONDS
-        )
+        result = await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         return result, f"{agent_label}: data received"
     except TimeoutError:
-        return unavailable, f"{agent_label}: timed out after {AGENT_TIMEOUT_SECONDS}s (unavailable)"
+        # #124: the trace string below is user-facing (FR-PLAN-4 / FR-UI-3) and
+        # only ever reaches the WebSocket client, so without a log line here a
+        # degraded agent leaves no trace on the server at all. Every adapter in
+        # data_access/ logs before returning 'unavailable'; the graph was the
+        # one layer that degraded silently (mirrors #129's fix for the
+        # exception path below).
+        logger.warning(
+            "%s: exceeded its %ss budget — degrading to unavailable", agent_label, timeout
+        )
+        return unavailable, f"{agent_label}: timed out after {timeout}s (unavailable)"
     except Exception as exc:  # noqa: BLE001 - deliberate: degrade, don't crash the query
+        # #129: this used to be silent server-side — the failure only ever
+        # reached the client's Agent Trace panel via the trace_line below, so
+        # a real production error (e.g. Synthesis's Gemini call blowing up)
+        # left zero trace in Render logs. exc_info=exc keeps the full
+        # traceback, not just str(exc), so a KeyError/AttributeError from a
+        # code bug is as diagnosable as an upstream HTTP failure.
+        logger.error("%s: error — treated as unavailable", agent_label, exc_info=exc)
         return unavailable, f"{agent_label}: error ({exc}) — treated as unavailable"
 
 
@@ -133,6 +207,7 @@ def _weather_node(agent: WeatherAgent):
             window,
             unavailable=_unavailable_weather_result(),
             agent_label="Weather Agent",
+            timeout=WEATHER_TIMEOUT_SECONDS,
         )
         return {"results": {"weather": result}, "trace": [trace_line]}
 
@@ -261,7 +336,13 @@ def _synthesis_node(agent: SynthesisAgent):
             # No agents ran, nothing to synthesize from — the clarification
             # prompt IS the response; skip the LLM call entirely (LLD §2.2).
             composed = ComposedResponse(text=plan.clarification_prompt or "")
-            return {"composed": composed, "trace": ["Synthesis: skipped (clarification requested)"]}
+            # A clarifying question IS a successful response — the LLM was
+            # skipped deliberately, nothing failed.
+            return {
+                "composed": composed,
+                "synthesis_ok": True,
+                "trace": ["Synthesis: skipped (clarification requested)"],
+            }
 
         composed, trace_line = await _call_bounded(
             agent.compose,
@@ -270,8 +351,21 @@ def _synthesis_node(agent: SynthesisAgent):
             state.get("language", "en"),
             unavailable=_unavailable_composed_response(),
             agent_label="Synthesis Agent",
+            timeout=SYNTHESIS_TIMEOUT_SECONDS,
         )
-        return {"composed": composed, "trace": [trace_line]}
+        return {
+            "composed": composed,
+            # #133: was `composed is not sentinel`, which could only recognise
+            # the degradation this node built itself. SynthesisAgent has its own
+            # degraded response (returned when it runs out of budget, or when a
+            # safety check rejects the composition twice) and that one sailed
+            # through the identity check as if it were verified — putting a
+            # verdict badge over text that says nothing could be verified.
+            # ComposedResponse.verified is now the single signal, whoever built
+            # the response.
+            "synthesis_ok": composed.verified,
+            "trace": [trace_line],
+        }
 
     return _node
 
@@ -378,7 +472,18 @@ def _resolve_time_window(text: str | None, now: datetime | None = None) -> TimeW
 def _unavailable_weather_result() -> Any:
     from app.schemas.weather import WeatherResult
 
-    return WeatherResult(wind_speed_kmh=0.0, wave_height_m=0.0, status="unavailable")
+    # alerts_source_available MUST be False here (#110). It defaults to True,
+    # which would claim both alert feeds were reached and found clear while
+    # this result carries wind=0.0/wave=0.0 — exactly the "empty list read as
+    # 'no alerts' rather than 'unknown'" trap WeatherResult's own docstring
+    # warns about (NFR-REL-2). WeatherAgent._unavailable() sets it False for
+    # the same reason; this sentinel must not disagree with it.
+    return WeatherResult(
+        wind_speed_kmh=0.0,
+        wave_height_m=0.0,
+        status="unavailable",
+        alerts_source_available=False,
+    )
 
 
 def _unavailable_ocean_params() -> Any:
@@ -399,7 +504,8 @@ def _unavailable_composed_response() -> ComposedResponse:
     given (contrast with a genuine INSUFFICIENT_DATA verdict, which IS an
     answer)."""
     return ComposedResponse(
-        text="Sorry, I couldn't put together an answer for that just now — please try again."
+        text="Sorry, I couldn't put together an answer for that just now — please try again.",
+        verified=False,
     )
 
 

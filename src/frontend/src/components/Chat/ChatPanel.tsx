@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { wsClient } from "../../api/wsClient";
-import { API_BASE_URL } from "../../api/config";
+import { createSession, checkSession } from "../../api/session";
 import { MAP_UPDATE_EVENT } from "../../api/mapPayload";
-import type { ServerMessage, ServerFinalResponse } from "../../api/wsClient";
+import type { ConnectionStatus, ServerMessage, ServerFinalResponse } from "../../api/wsClient";
 import "./ChatPanel.css";
 
 type ChatMessage = {
@@ -10,6 +10,10 @@ type ChatMessage = {
   sender: "user" | "system";
   text: string;
   verdict?: ServerFinalResponse["verdict"];
+  // Snapshot of the agent trace that produced this answer (or the partial
+  // trace up to a failure) — kept, not discarded, so it's still inspectable
+  // after the fact. Collapsed by default; see the <details> below.
+  trace?: string[];
 };
 
 export default function ChatPanel() {
@@ -18,100 +22,160 @@ export default function ChatPanel() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [traceSteps, setTraceSteps] = useState<string[]>([]);
+  // #170: reflects the WebSocket's real state so the UI never just sits
+  // there — "closed" means we're mid-reconnect (the backend closes the
+  // socket after every query), during which sends are queued, not dropped.
+  const [wsStatus, setWsStatus] = useState<ConnectionStatus>("connecting");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
+  // Mirrors traceSteps so the WS message handler can read the trace-so-far
+  // synchronously when a query finishes, without nesting a setState call
+  // inside setTraceSteps's updater (which React may invoke more than once).
+  const traceStepsRef = useRef<string[]>([]);
 
-  const [sessionId, setSessionId] = useState(() => {
-    return localStorage.getItem("orca_session") || `sess_${Math.random().toString(36).substring(2, 9)}`;
-  });
+  // null until the session is established — either restored from a previous
+  // visit or minted by the backend (#104). Every effect that talks to the
+  // backend waits for it, so nothing races the POST /api/v1/session.
+  const [sessionId, setSessionId] = useState<string | null>(() =>
+    localStorage.getItem("orca_session"),
+  );
   const [verifyStatus, setVerifyStatus] = useState<"pending" | "failed" | "success">("pending");
 
-  // Verify session on mount
+  // Establish the session on mount (LLD §5.1). A stored id is verified against
+  // the backend first; an id the backend doesn't recognise is replaced rather
+  // than reused, which is also what migrates pre-#104 `sess_*` ids.
   useEffect(() => {
-    const verifySession = async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/v1/session/${sessionId}/history`);
-        if (res.status === 404) {
-          // Session has no history on backend. Clear local storage for it.
-          localStorage.removeItem(`orca_chat_history_${sessionId}`);
-          setMessages([]);
-          setVerifyStatus("success");
-        } else if (res.ok) {
-          // Session valid, load rich history from local storage
-          const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
-          if (saved) {
-            const parsedSaved = JSON.parse(saved) as ChatMessage[];
-            setMessages((prev) => {
-              const prevIds = new Set(prev.map(m => m.id));
-              const newSaved = parsedSaved.filter(m => !prevIds.has(m.id));
-              return [...newSaved, ...prev];
-            });
-          }
-          setVerifyStatus("success");
-        } else {
-          setVerifyStatus("failed");
-        }
-      } catch (err) {
-        console.error("Failed to verify session history", err);
-        setVerifyStatus("failed");
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      if (sessionId === null) {
+        const created = await createSession();
+        if (cancelled) return;
+        localStorage.setItem("orca_session", created);
+        setSessionId(created);
+        setVerifyStatus("success");
+        return;
       }
+
+      const status = await checkSession(sessionId);
+      if (cancelled) return;
+
+      if (status === "unknown-session") {
+        // Stale id: the backend restarted (its session store is in-process),
+        // or this is a client-minted id from before #104. Either way there is
+        // no server-side context behind it, so start a real one — and drop the
+        // local transcript, which would otherwise imply a continuity the
+        // backend can no longer honour for FR-PLAN-5 follow-ups.
+        localStorage.removeItem(`orca_chat_history_${sessionId}`);
+        setMessages([]);
+        const created = await createSession();
+        if (cancelled) return;
+        localStorage.setItem("orca_session", created);
+        setSessionId(created);
+        setVerifyStatus("success");
+        return;
+      }
+
+      if (status === "ok") {
+        const saved = localStorage.getItem(`orca_chat_history_${sessionId}`);
+        if (saved) {
+          const parsedSaved = JSON.parse(saved) as ChatMessage[];
+          setMessages((prev) => {
+            const prevIds = new Set(prev.map((m) => m.id));
+            const newSaved = parsedSaved.filter((m) => !prevIds.has(m.id));
+            return [...newSaved, ...prev];
+          });
+        }
+        setVerifyStatus("success");
+        return;
+      }
+
+      // "unreachable": we learned nothing about the session, so keep the id
+      // and the local transcript. verifyStatus stays "failed", which stops us
+      // overwriting stored history with state we can't vouch for.
+      setVerifyStatus("failed");
     };
-    verifySession();
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   // Persist messages whenever they change
   useEffect(() => {
-    if (verifyStatus === "success") {
+    if (sessionId !== null && verifyStatus === "success") {
       localStorage.setItem(`orca_chat_history_${sessionId}`, JSON.stringify(messages));
     }
   }, [messages, sessionId, verifyStatus]);
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     wsClient.close();
-    const newId = `sess_${Math.random().toString(36).substring(2, 9)}`;
-    setSessionId(newId);
-    localStorage.setItem("orca_session", newId);
     setMessages([]);
     setTraceSteps([]);
+    traceStepsRef.current = [];
     setVerifyStatus("pending");
+    const newId = await createSession();
+    localStorage.setItem("orca_session", newId);
+    setSessionId(newId);
+    setVerifyStatus("success");
   };
 
   useEffect(() => {
+    if (sessionId === null) return;  // still bootstrapping — see the effect above
     localStorage.setItem("orca_session", sessionId);
 
-    wsClient.connect(sessionId, (msg: ServerMessage) => {
-      if (msg.type === "final_response") {
-        setTraceSteps([]);
-        setIsProcessing(false);
-        // Hand map_payload to MapPanel (via App) using the same window-event
-        // pattern as the trace_update dispatch below. FR-UI-2 / FR-GEO-3, #35.
-        window.dispatchEvent(new CustomEvent(MAP_UPDATE_EVENT, { detail: msg.map_payload }));
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            sender: "system",
-            text: msg.text,
-            verdict: msg.verdict,
-          },
-        ]);
-        if (msg.audio_base64) {
-          const audio = new Audio(`data:audio/wav;base64,${msg.audio_base64}`);
-          audio.play().catch(e => console.error("Audio playback failed", e));
+    wsClient.connect(
+      sessionId,
+      (msg: ServerMessage) => {
+        if (msg.type === "final_response") {
+          setIsProcessing(false);
+          // Hand map_payload to MapPanel (via App) using the same window-event
+          // pattern as the trace_update dispatch below. FR-UI-2 / FR-GEO-3, #35.
+          window.dispatchEvent(new CustomEvent(MAP_UPDATE_EVENT, { detail: msg.map_payload }));
+          const finishedTrace = traceStepsRef.current;
+          traceStepsRef.current = [];
+          setTraceSteps([]);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              sender: "system",
+              text: msg.text,
+              verdict: msg.verdict,
+              trace: finishedTrace,
+            },
+          ]);
+          if (msg.audio_base64) {
+            const audio = new Audio(`data:audio/wav;base64,${msg.audio_base64}`);
+            audio.play().catch(e => console.error("Audio playback failed", e));
+          }
+        } else if (msg.type === "error") {
+          setIsProcessing(false);
+          const finishedTrace = traceStepsRef.current;
+          traceStepsRef.current = [];
+          setTraceSteps([]);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              sender: "system",
+              text: `Sorry, I ran into an error: ${msg.message}`,
+              trace: finishedTrace,
+            },
+          ]);
+        } else if (msg.type === "trace_update") {
+          setTraceSteps((prev) => {
+            const next = [...prev, msg.step];
+            traceStepsRef.current = next;
+            return next;
+          });
+          window.dispatchEvent(new CustomEvent("trace_update", { detail: msg }));
         }
-      } else if (msg.type === "error") {
-        setTraceSteps([]);
-        setIsProcessing(false);
-        setMessages((prev) => [
-          ...prev,
-          { id: Date.now().toString(), sender: "system", text: `Sorry, I ran into an error: ${msg.message}` },
-        ]);
-      } else if (msg.type === "trace_update") {
-        setTraceSteps((prev) => [...prev, msg.step]);
-        window.dispatchEvent(new CustomEvent("trace_update", { detail: msg }));
-      }
-    });
+      },
+      (status) => setWsStatus(status),
+    );
 
     return () => {
       wsClient.close();
@@ -231,6 +295,19 @@ export default function ChatPanel() {
                     </div>
                   )}
                   <div>{m.text}</div>
+                  {m.trace && m.trace.length > 0 && (
+                    // Kept, not discarded, after the answer lands — collapsed
+                    // by default so it doesn't compete with the answer, but a
+                    // click reopens the same trace FR-UI-3 asks to be visible.
+                    <details className="trace-disclosure">
+                      <summary>Agent trace ({m.trace.length} step{m.trace.length === 1 ? "" : "s"})</summary>
+                      <div className="trace-progress">
+                        {m.trace.map((step, i) => (
+                          <div key={i} className="trace-step">{step}</div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </div>
               </div>
             ) : (
@@ -238,7 +315,7 @@ export default function ChatPanel() {
             )}
           </div>
         ))}
-        {traceSteps.length > 0 && (
+        {isProcessing && (
           <div className="chat-message system">
              <div className="sys-msg-container">
                 <div className="sys-avatar">
@@ -251,7 +328,7 @@ export default function ChatPanel() {
                 </div>
                 <div className="sys-content">
                   <div className="trace-progress" aria-live="polite" aria-label="Agent progress">
-                    <div className="trace-label">Thinking...</div>
+                    <div className="trace-label thinking-dots">Thinking</div>
                     {traceSteps.map((step, i) => (
                       <div key={i} className="trace-step">{step}</div>
                     ))}
@@ -261,6 +338,12 @@ export default function ChatPanel() {
           </div>
         )}
       </div>
+
+      {wsStatus === "closed" && (
+        <div className="ws-status-banner" role="status">
+          Reconnecting… your next message will send as soon as the connection is back.
+        </div>
+      )}
 
       <div className="chat-input-area">
         <div className="chat-input-container">
