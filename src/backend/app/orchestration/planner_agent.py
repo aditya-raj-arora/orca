@@ -50,11 +50,19 @@ _NO_MATCH_CONFIDENCE = 0.2
 # chosen over gemini-3.6-flash for its higher free-tier RPM/RPD.
 _GEMINI_MODEL = "gemini-3.5-flash-lite"
 
-# Deadline for the single retry attempt in extract_entities() below. Kept at
-# the API's own floor (see _LLM_TIMEOUT_S's comment) rather than the full
+# Deadline for each retry attempt in extract_entities() below. Kept at the
+# API's own floor (see _LLM_TIMEOUT_S's comment) rather than the full
 # _LLM_TIMEOUT_S, so a genuinely stuck provider still bails out in bounded
-# time on the second attempt rather than doubling the worst case to ~50s.
+# time on later attempts rather than each one doubling the worst case.
 _RETRY_TIMEOUT_S = 10.0
+
+# How many retries extract_entities() spends before falling back to keyword
+# matching (#43: raised from 1 to 2 after live rehearsal caught a single
+# retry losing to a sustained Gemini 503 "high demand" burst — a single 504
+# timeout clears on one retry, but bursty overload can outlast it). Worst
+# case with _RETRY_TIMEOUT_S=10 is ~25s + 10s + 10s = 45s before falling back
+# — long, but bounded, and only on repeated genuine provider failure.
+_MAX_RETRIES = 2
 
 # Bound on the entity-extraction call (#133). This is a server-side deadline
 # and Gemini rejects anything under 10s with a 400 (#135) — #134 set it to 5s,
@@ -279,9 +287,10 @@ class PlannerAgent:
     def extract_entities(self, query: NormalizedQuery) -> QueryEntities:
         """Uses the LLM provider (Gemini structured JSON output, see
         docs/CREDENTIALS.md #1) to extract structured entities from free
-        text. On provider failure/timeout, retries once (deployed traffic has
-        shown transient Gemini 504 DEADLINE_EXCEEDED responses that a bare
-        retry clears — see #36's live rehearsal), then falls back to simple
+        text. On provider failure/timeout, retries up to _MAX_RETRIES times
+        (deployed traffic has shown transient Gemini 504 DEADLINE_EXCEEDED
+        AND 503 UNAVAILABLE/high-demand responses — #36's and #43's live
+        rehearsals each independently hit one — before falling back to simple
         keyword matching for intent classification (LLD §6 error-handling
         table) — location resolution has no non-LLM fallback, so a fallback
         extraction always leaves location unresolved and lets plan()'s
@@ -291,23 +300,30 @@ class PlannerAgent:
         with no retry doesn't just cost fluency (as it does for Synthesis's
         own regeneration) — it silently disables location resolution for the
         whole turn, which reads to a fisherman as "the app didn't understand
-        Kochi" for a query that named Kochi plainly."""
-        try:
-            return self._extract_via_llm(query)
-        except Exception as exc:  # noqa: BLE001 - deliberate broad catch, see LLD §6
-            logger.warning(
-                "Planner.extract_entities: LLM extraction failed (%s), retrying once",
-                exc,
-            )
-        try:
-            return self._extract_via_llm(query, timeout_s=_RETRY_TIMEOUT_S)
-        except Exception as exc:  # noqa: BLE001 - deliberate broad catch, see LLD §6
-            logger.warning(
-                "Planner.extract_entities: retry also failed (%s), "
-                "falling back to keyword matching",
-                exc,
-            )
-            return self._extract_via_keywords(query)
+        Kochi" for a query that named Kochi plainly. Two retries (three
+        attempts total), not one: #43's rehearsal caught a single retry
+        losing to a sustained 503 "high demand" burst, which single 504s
+        don't behave like — clearing bursty overload can take more than one
+        extra attempt, and each retry is bounded to _RETRY_TIMEOUT_S so the
+        worst case (~25s + 10s + 10s) stays bounded rather than unbounded."""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                timeout_s = None if attempt == 0 else _RETRY_TIMEOUT_S
+                return self._extract_via_llm(query, timeout_s=timeout_s)
+            except Exception as exc:  # noqa: BLE001 - deliberate broad catch, see LLD §6
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "Planner.extract_entities: LLM extraction failed (%s), "
+                        "retrying (attempt %d/%d)",
+                        exc, attempt + 1, _MAX_RETRIES,
+                    )
+                else:
+                    logger.warning(
+                        "Planner.extract_entities: all %d attempts failed (%s), "
+                        "falling back to keyword matching",
+                        _MAX_RETRIES + 1, exc,
+                    )
+        return self._extract_via_keywords(query)
 
     def _extract_via_llm(
         self, query: NormalizedQuery, timeout_s: float | None = None
@@ -446,7 +462,16 @@ class PlannerAgent:
         Deliberately just above the threshold rather than high: this is a
         degraded extraction and the value should read as one."""
         text = query.text.lower()
-        weather_kw = ("weather", "forecast", "wind", "wave", "temperature", "rain", "conditions")
+        # "sea" added per #43's live demo-script rehearsal: "what's the sea
+        # like off Chennai right now?" matched none of the original keywords
+        # (no "weather"/"wind"/etc.), so a live Gemini overload during that
+        # exact query sent it to this fallback with zero matches — below
+        # MIN_ENTITY_CONFIDENCE — for a plainly weather-shaped question. "sea"
+        # is natural phrasing for this domain and belongs here regardless.
+        weather_kw = (
+            "weather", "forecast", "wind", "wave", "temperature", "rain",
+            "conditions", "sea",
+        )
         safety_kw = ("safe", "safety", "risk", "danger", "go out", "venture")
         fishing_kw = ("fish", "fishing", "pfz", "catch", "zone")
         boundary_kw = ("boundary", "border", "restricted", "protected", "mpa", "imbl")

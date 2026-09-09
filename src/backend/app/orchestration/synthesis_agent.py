@@ -228,6 +228,21 @@ that no such zones were found within the search radius given ("radius_km") — \
 never phrase it as though a wider area was surveyed and found clear. Only one \
 point was actually evaluated plus this radius scan; do not imply a full \
 regional survey.
+5a. "ocean_nearby" and "geofencing_nearby" answer OPPOSITE questions — do not \
+present them as the same kind of list. "ocean_nearby" zones are potential \
+FISHING opportunities (places to consider going TO). "geofencing_nearby" \
+zones are restricted/protected areas (places to AVOID). If a query asks which \
+zones to avoid and only "geofencing_nearby" is empty, say plainly that no \
+restricted zones were found nearby — do not then list "ocean_nearby" zones as \
+if they were an answer to "which zones to avoid", since they are the opposite \
+kind of place. Both may still be reported in the same response when both are \
+present, but each under its own kind, never blended into one undifferentiated \
+list.
+6. When a fact includes a compass bearing ("bearing_deg"), phrase it as a \
+plain compass direction word (north/northeast/east/southeast/south/southwest/ \
+west/northwest, or one used adjectivally, e.g. "82 km to the southwest") \
+rather than reciting the raw degree value ("at a bearing of 210.8 degrees") — \
+a fisherman thinks in compass directions, not azimuth degrees.
 
 Respond with ONLY a JSON object, no other text, in this exact shape:
 {"sentences": [{"text": str, "source": str}, ...]}
