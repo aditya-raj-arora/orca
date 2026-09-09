@@ -12,6 +12,17 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 });
 
+// A concrete icon instance for "just use the default pin" markers, rather
+// than an `icon={undefined}` prop: react-leaflet forwards every prop it's
+// given — including one whose value is `undefined` — straight into
+// Leaflet's own option merge, which overwrites (not skips) the class-level
+// default icon Leaflet would otherwise fall back to. The result is a marker
+// whose resolved `options.icon` really is `undefined`, and Leaflet's
+// `_initIcon` crashes calling `.createIcon()` on it the moment such a
+// marker is actually rendered (`Cannot read properties of undefined
+// (reading 'createIcon')`).
+const DEFAULT_MARKER_ICON = new L.Icon.Default();
+
 export interface MarkerData {
   id: string;
   lat: number;
@@ -48,7 +59,7 @@ export default function MapPanel({
   geofenceError = false
 }: MapPanelProps) {
   const getMarkerIcon = (marker: MarkerData) => {
-    if (!marker.isViolation && !marker.isProximity) return undefined; // default pin
+    if (!marker.isViolation && !marker.isProximity) return DEFAULT_MARKER_ICON; // default pin
     const color = marker.isViolation ? "#dc2626" : "#f59e0b";
     return L.divIcon({
       className: "",
