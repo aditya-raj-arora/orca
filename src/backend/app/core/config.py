@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     gis_boundary_data_path: str = "./data/gis/imbl_mpa_boundaries.geojson"
     imbl_buffer_km: float = 5.0
 
+    # "Which zones nearby?" listing (issue #174). Only used when the Planner
+    # flags a query as area-scoped (scope="area"); point queries are
+    # unaffected. Radii are deliberately generous — a "which zones" answer
+    # that lists nothing because the radius was tight is worse than one that
+    # lists a handful and states the radius it searched.
+    ocean_pfz_nearby_radius_km: float = 300.0
+    geofence_nearby_radius_km: float = 150.0
+    nearby_zone_limit: int = 8
+
     # Risk/Safety Agent marginal-conditions thresholds (owner P4, LLD §4.2 /
     # Figure 2 "Weather conditions marginal ... no active alert?" branch).
     # At or above either value, with no active alert and no geofence

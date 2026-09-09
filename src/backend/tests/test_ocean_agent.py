@@ -235,6 +235,59 @@ def test_data_timestamp_falls_back_to_fetched_at_when_no_advisory_date() -> None
 
 
 # --------------------------------------------------------------------------- #
+# OceanAgent.list_nearby_pfz — "which zones" listing (issue #174)
+# --------------------------------------------------------------------------- #
+def test_list_nearby_pfz_returns_all_in_radius_sorted_by_distance() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result()))
+    loc = LatLon(14.0, 80.0)
+    r = agent.list_nearby_pfz(loc, radius_km=10_000)  # radius wide enough for all 3
+    assert r is not None
+    assert [(z.centroid.lat, z.centroid.lon) for z in r.zones] == [
+        (p["lat"], p["lon"])
+        for p in sorted(
+            _PFZ_POINTS, key=lambda p: haversine_km(loc.lat, loc.lon, p["lat"], p["lon"])
+        )
+    ]
+    assert r.zones == sorted(r.zones, key=lambda z: z.distance_km)
+    assert r.radius_km == 10_000
+
+
+def test_list_nearby_pfz_filters_outside_radius() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result()))
+    # Chennai line (uid 3) is ~the only one within 100 km of this point.
+    r = agent.list_nearby_pfz(LatLon(13.4287, 80.6392), radius_km=100)
+    assert r is not None
+    assert len(r.zones) == 1
+    assert (r.zones[0].centroid.lat, r.zones[0].centroid.lon) == (13.4287, 80.6392)
+
+
+def test_list_nearby_pfz_respects_limit() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result()))
+    r = agent.list_nearby_pfz(LatLon(14.0, 80.0), radius_km=10_000, limit=2)
+    assert r is not None
+    assert len(r.zones) == 2
+
+
+def test_list_nearby_pfz_empty_list_when_none_in_radius() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result()))
+    r = agent.list_nearby_pfz(LatLon(0.0, 0.0), radius_km=50)
+    assert r is not None  # feed was reachable...
+    assert r.zones == []  # ...but nothing within radius — not the same as None
+
+
+def test_list_nearby_pfz_none_when_unavailable() -> None:
+    agent = OceanAgent(_FakeAdapter(AdapterResult(None, datetime.now(UTC), "unavailable")))
+    assert agent.list_nearby_pfz(LatLon(13.08, 80.27)) is None
+
+
+def test_list_nearby_pfz_propagates_stale_flag() -> None:
+    agent = OceanAgent(_FakeAdapter(_pfz_result(status="stale")))
+    r = agent.list_nearby_pfz(LatLon(14.0, 80.0), radius_km=10_000)
+    assert r is not None and r.is_stale is True
+    assert all(z.is_stale for z in r.zones)
+
+
+# --------------------------------------------------------------------------- #
 # OceanAgent.get_ocean_parameters — no fabrication (FR-OCEAN-2)
 # --------------------------------------------------------------------------- #
 def _params_result(sst, chl, status="ok"):

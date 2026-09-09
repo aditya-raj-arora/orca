@@ -100,6 +100,35 @@ def test_compose_filters_none_results():
     assert '"ocean": null' not in sent_prompt and '"ocean": None' not in sent_prompt
 
 
+def test_compose_enumerates_and_cites_nearby_zone_lists():
+    """issue #174: ocean_nearby / geofencing_nearby carry a LIST of zones;
+    compose() must serialize the list into the prompt and cite it like any
+    other agent."""
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_llm_response(
+        [
+            {"text": "Two restricted zones lie within 150 km.", "source": "geofencing_nearby"},
+            {"text": "Gulf of Mannar is 12 km to the south.", "source": "geofencing_nearby"},
+        ]
+    )
+    agent = SynthesisAgent(llm_client=fake_client)
+    results = {
+        "geofencing_nearby": {
+            "mpas": [
+                {"name": "Gulf of Mannar", "distance_km": 12.0, "contains_point": False},
+                {"name": "Pichavaram Mangrove", "distance_km": 88.0, "contains_point": False},
+            ],
+            "radius_km": 150.0,
+            "data_timestamp": datetime(2026, 9, 1, tzinfo=UTC),
+        },
+    }
+    response = agent.compose(ExecutionPlan(trace=[]), results, language="en")
+
+    assert [c.source for c in response.citations] == ["geofencing_nearby"]
+    sent_prompt = fake_client.models.generate_content.call_args.kwargs["contents"]
+    assert "Gulf of Mannar" in sent_prompt and "Pichavaram Mangrove" in sent_prompt
+
+
 def test_compose_all_none_results_short_circuits_without_llm_call():
     """If every agent result is None, compose() should degrade immediately
     without even calling the LLM."""

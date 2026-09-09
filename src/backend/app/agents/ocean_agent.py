@@ -19,7 +19,7 @@ from math import asin, atan2, cos, degrees, radians, sin, sqrt
 from app.core.config import get_settings
 from app.data_access.incois_adapter import INCOISAdapter
 from app.schemas.common import LatLon
-from app.schemas.ocean import OceanParams, PFZResult
+from app.schemas.ocean import NearbyPFZ, OceanParams, PFZResult
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,10 @@ def bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 class OceanAgent:
     def __init__(self, adapter: INCOISAdapter) -> None:
         self._adapter = adapter
-        self._staleness_hours = get_settings().ocean_pfz_staleness_hours
+        s = get_settings()
+        self._staleness_hours = s.ocean_pfz_staleness_hours
+        self._nearby_radius_km = s.ocean_pfz_nearby_radius_km  # issue #174
+        self._nearby_limit = s.nearby_zone_limit  # issue #174
 
     def get_nearest_pfz(self, location: LatLon) -> PFZResult | None:
         """Nearest currently-published PFZ advisory line to `location`.
@@ -84,6 +87,61 @@ class OceanAgent:
             bearing_deg=round(brg, 1),
             data_timestamp=advisory_ts or result.fetched_at,  # FR-OCEAN-3
             is_stale=self._is_stale(advisory_ts, result.status),  # FR-OCEAN-4
+        )
+
+    def list_nearby_pfz(
+        self,
+        location: LatLon,
+        radius_km: float | None = None,
+        limit: int | None = None,
+    ) -> NearbyPFZ | None:
+        """PFZ centroids within `radius_km` of `location`, nearest first —
+        issue #174. Same None-on-unavailable / None-on-empty-feed contract as
+        get_nearest_pfz(); the difference is that this one does NOT collapse
+        the adapter's already-parsed list down to one with min().
+
+        `zones` empty (vs. a None return) means the feed was reachable but
+        published no advisory within the radius — Synthesis must say that
+        plainly, not imply the whole area is clear."""
+        radius_km = self._nearby_radius_km if radius_km is None else radius_km
+        limit = self._nearby_limit if limit is None else limit
+
+        result = self._adapter.fetch({"kind": "pfz"})
+        pfz = (result.data or {}).get("pfz") or []
+        if result.status == "unavailable" or not pfz:
+            logger.info(
+                "OceanAgent: no PFZ data for nearby-listing at (%s, %s)",
+                location.lat,
+                location.lon,
+            )
+            return None
+
+        advisory_ts = _parse_dt((result.data or {}).get("advisory_date"))
+        stale = self._is_stale(advisory_ts, result.status)
+        data_ts = advisory_ts or result.fetched_at  # FR-OCEAN-3
+
+        zones: list[PFZResult] = []
+        for p in pfz:
+            dist = haversine_km(location.lat, location.lon, p["lat"], p["lon"])
+            if dist > radius_km:
+                continue
+            zones.append(
+                PFZResult(
+                    centroid=LatLon(p["lat"], p["lon"]),
+                    distance_km=round(dist, 2),
+                    bearing_deg=round(
+                        bearing_deg(location.lat, location.lon, p["lat"], p["lon"]), 1
+                    ),
+                    data_timestamp=data_ts,
+                    is_stale=stale,  # FR-OCEAN-4
+                )
+            )
+        zones.sort(key=lambda z: z.distance_km)
+        return NearbyPFZ(
+            zones=zones[:limit],
+            radius_km=radius_km,
+            data_timestamp=data_ts,
+            is_stale=stale,
         )
 
     def get_ocean_parameters(self, location: LatLon) -> OceanParams:
