@@ -231,3 +231,59 @@ body.dark .chat-history::-webkit-scrollbar-thumb {
   color: var(--color-text-muted);
   padding: 0.2rem 0;
 }
+
+/* "Thinking..." animated ellipsis shown the instant a query is sent, before
+   the first trace_update has arrived — otherwise the UI looks hung. */
+.thinking-dots::after {
+  content: "";
+  animation: thinking-ellipsis 1.4s infinite steps(4, end);
+}
+
+@keyframes thinking-ellipsis {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+  100% { content: ""; }
+}
+
+/* Trace kept after the answer arrives, collapsed behind a click (FR-UI-3). */
+.trace-disclosure {
+  margin-top: 0.75rem;
+}
+
+.trace-disclosure summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  list-style: none;
+}
+
+.trace-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-disclosure summary::before {
+  content: "▸ ";
+}
+
+.trace-disclosure[open] summary::before {
+  content: "▾ ";
+}
+
+.trace-disclosure .trace-progress {
+  margin-top: 0.5rem;
+}
+
+/* #170: shown while the socket is mid-reconnect so a fast follow-up doesn't
+   look like it silently hung — the message is queued and will send once the
+   connection is back. */
+.ws-status-banner {
+  padding: 0.5rem 1.5rem;
+  font-size: 0.8rem;
+  color: var(--color-caution);
+  background: rgba(245, 158, 11, 0.1);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+}
