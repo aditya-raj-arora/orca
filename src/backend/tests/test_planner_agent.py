@@ -117,6 +117,44 @@ def test_trace_is_populated_for_fr_plan_4():
 
 
 # --------------------------------------------------------------------- #
+# issue #174 — area-scoped ("which zones/regions") queries
+# --------------------------------------------------------------------- #
+def test_scope_defaults_to_point_and_is_not_passed_when_point():
+    plan = route_query(_entities(intent_fishing=True, intent_boundary=True), LOCATION, [])
+    for inv in plan.invocations:
+        if inv.agent_name in ("ocean", "geofencing"):
+            assert inv.input_payload.get("scope") == "point"
+
+
+def test_area_scope_is_passed_to_ocean_and_geofencing_payloads():
+    plan = route_query(
+        _entities(intent_fishing=True, intent_boundary=True, scope="area"), LOCATION, []
+    )
+    payloads = {inv.agent_name: inv.input_payload for inv in plan.invocations}
+    assert payloads["ocean"]["scope"] == "area"
+    assert payloads["geofencing"]["scope"] == "area"
+    assert any("area-scoped" in step for step in plan.trace)
+
+
+def test_keyword_fallback_flags_which_zones_query_as_area():
+    ents = PlannerAgent()._extract_via_keywords(
+        NormalizedQuery(
+            text="which fishing zones should be avoided due to restricted areas",
+            language="en",
+        )
+    )
+    assert ents.scope == "area"
+    assert ents.intent_boundary is True
+
+
+def test_keyword_fallback_leaves_single_point_query_as_point():
+    ents = PlannerAgent()._extract_via_keywords(
+        NormalizedQuery(text="is it safe to fish near Kochi tomorrow", language="en")
+    )
+    assert ents.scope == "point"
+
+
+# --------------------------------------------------------------------- #
 # ConversationContext — used by plan() for the FR-PLAN-5 location fallback.
 # --------------------------------------------------------------------- #
 

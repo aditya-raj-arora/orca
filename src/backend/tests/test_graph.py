@@ -245,6 +245,130 @@ async def test_no_intent_query_skips_risk_and_all_specialists():
     assert state["composed"].text == "informational answer"
 
 
+async def test_area_scoped_plan_populates_nearby_results(monkeypatch):
+    """issue #174: when the Planner marks ocean/geofencing invocations
+    scope="area", the nodes also call the list-nearby methods and surface
+    ocean_nearby / geofencing_nearby, without disturbing the single-point
+    results that Risk/Safety consumes."""
+    from app.schemas.geofence import NearbyMPA, NearbyZones
+    from app.schemas.ocean import NearbyPFZ
+
+    class FakePlanner:
+        def plan(self, query, context):
+            return ExecutionPlan(
+                invocations=[
+                    AgentInvocationRequest(
+                        agent_name="ocean",
+                        input_payload={"location": LOCATION, "scope": "area"},
+                    ),
+                    AgentInvocationRequest(
+                        agent_name="geofencing",
+                        input_payload={"location": LOCATION, "scope": "area"},
+                    ),
+                    AgentInvocationRequest(agent_name="risk_safety", input_payload={}),
+                ],
+                trace=[],
+            )
+
+    class FakeOcean:
+        def get_nearest_pfz(self, location):
+            return PFZResult(
+                centroid=None, distance_km=5.0, bearing_deg=45, data_timestamp=None, is_stale=False
+            )
+
+        def get_ocean_parameters(self, location):
+            return OceanParams(sea_surface_temp_c=28.5, chlorophyll_mg_m3=0.4)
+
+        def list_nearby_pfz(self, location):
+            return NearbyPFZ(zones=[], radius_km=300.0, data_timestamp=None, is_stale=False)
+
+    class FakeGeofencing:
+        def check(self, location):
+            return GeofenceResult(within_imbl_buffer=False, imbl_distance_km=20.0, within_mpa=False)
+
+        def list_nearby(self, location):
+            return NearbyZones(
+                mpas=[NearbyMPA(name="Gulf of Mannar", distance_km=12.0, contains_point=False)],
+                radius_km=150.0,
+                data_timestamp=None,
+            )
+
+    seen = {}
+
+    class FakeRisk:
+        def evaluate(self, weather, geofence, ocean):
+            # nearby lists are descriptive only — Risk still gets the point results
+            assert geofence is not None and ocean is not None
+            return RiskVerdict(verdict="SAFE", rationale="clear", contributing_factors=[])
+
+    class FakeSynthesis:
+        def compose(self, plan, results, language):
+            seen["keys"] = set(results.keys())
+            return ComposedResponse(text="ok")
+
+    state = await run_query(
+        NormalizedQuery(text="which fishing zones should be avoided near kochi", language="en"),
+        ConversationContext(session_id="t6"),
+        planner=FakePlanner(),
+        weather_agent=_ExplodingAgent(),
+        ocean_agent=FakeOcean(),
+        geofencing_agent=FakeGeofencing(),
+        risk_agent=FakeRisk(),
+        synthesis_agent=FakeSynthesis(),
+    )
+
+    assert {"ocean", "ocean_params", "ocean_nearby", "geofencing", "geofencing_nearby"} <= set(
+        state["results"].keys()
+    )
+    assert isinstance(state["results"]["ocean_nearby"], NearbyPFZ)
+    assert state["results"]["geofencing_nearby"].mpas[0].name == "Gulf of Mannar"
+    assert "geofencing_nearby" in seen["keys"]
+
+
+async def test_point_scoped_plan_has_no_nearby_results():
+    """The default path is untouched — no scope, no list-nearby calls."""
+
+    class FakePlanner:
+        def plan(self, query, context):
+            return ExecutionPlan(
+                invocations=[
+                    AgentInvocationRequest(
+                        agent_name="geofencing", input_payload={"location": LOCATION}
+                    ),
+                    AgentInvocationRequest(agent_name="risk_safety", input_payload={}),
+                ],
+                trace=[],
+            )
+
+    class FakeGeofencing:
+        def check(self, location):
+            return GeofenceResult(within_imbl_buffer=False, imbl_distance_km=20.0, within_mpa=False)
+
+        def list_nearby(self, location):
+            raise AssertionError("list_nearby must not be called for a point-scoped plan")
+
+    class FakeRisk:
+        def evaluate(self, weather, geofence, ocean):
+            return RiskVerdict(verdict="SAFE", rationale="clear", contributing_factors=[])
+
+    class FakeSynthesis:
+        def compose(self, plan, results, language):
+            return ComposedResponse(text="ok")
+
+    state = await run_query(
+        NormalizedQuery(text="am I inside a restricted zone at kochi", language="en"),
+        ConversationContext(session_id="t7"),
+        planner=FakePlanner(),
+        weather_agent=_ExplodingAgent(),
+        ocean_agent=_ExplodingAgent(),
+        geofencing_agent=FakeGeofencing(),
+        risk_agent=FakeRisk(),
+        synthesis_agent=FakeSynthesis(),
+    )
+
+    assert "geofencing_nearby" not in state["results"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

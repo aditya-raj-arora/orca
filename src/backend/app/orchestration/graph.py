@@ -229,8 +229,10 @@ def _ocean_node(agent: OceanAgent):
         # Figure 2 tree, only by Synthesis) are two independent calls on the
         # same agent instance; run them concurrently rather than serially so
         # one "ocean" node stays within AGENT_TIMEOUT_SECONDS like every
-        # other specialist, not double it.
-        (pfz_result, pfz_trace), (params_result, params_trace) = await asyncio.gather(
+        # other specialist, not double it. For an area-scoped query (issue
+        # #174) a third concurrent call lists the nearby PFZ zones.
+        area = _scope_for(state, "ocean") == "area"
+        calls = [
             _call_bounded(
                 agent.get_nearest_pfz,
                 location,
@@ -243,11 +245,25 @@ def _ocean_node(agent: OceanAgent):
                 unavailable=_unavailable_ocean_params(),
                 agent_label="Ocean Agent (SST/chlorophyll)",
             ),
-        )
-        return {
-            "results": {"ocean": pfz_result, "ocean_params": params_result},
-            "trace": [pfz_trace, params_trace],
-        }
+        ]
+        if area:
+            calls.append(
+                _call_bounded(
+                    agent.list_nearby_pfz,
+                    location,
+                    unavailable=None,
+                    agent_label="Ocean Agent (nearby PFZ zones)",
+                )
+            )
+        done = await asyncio.gather(*calls)
+        (pfz_result, pfz_trace), (params_result, params_trace) = done[0], done[1]
+        results: dict[str, Any] = {"ocean": pfz_result, "ocean_params": params_result}
+        trace = [pfz_trace, params_trace]
+        if area:
+            nearby_result, nearby_trace = done[2]
+            results["ocean_nearby"] = nearby_result
+            trace.append(nearby_trace)
+        return {"results": results, "trace": trace}
 
     return _node
 
@@ -261,6 +277,25 @@ def _geofencing_node(agent: GeofencingAgent):
             return {
                 "results": {"geofencing": None},
                 "trace": ["Geofencing Agent: location not resolved to coordinates (unavailable)"],
+            }
+        # Area-scoped query (issue #174): also enumerate nearby MPAs. check()
+        # is unchanged and still what Risk/Safety consumes (FR-GEO-4); the
+        # list is descriptive, for Synthesis only.
+        if _scope_for(state, "geofencing") == "area":
+            (result, trace_line), (nearby_result, nearby_trace) = await asyncio.gather(
+                _call_bounded(
+                    agent.check, location, unavailable=None, agent_label="Geofencing Agent"
+                ),
+                _call_bounded(
+                    agent.list_nearby,
+                    location,
+                    unavailable=None,
+                    agent_label="Geofencing Agent (nearby MPAs)",
+                ),
+            )
+            return {
+                "results": {"geofencing": result, "geofencing_nearby": nearby_result},
+                "trace": [trace_line, nearby_trace],
             }
         result, trace_line = await _call_bounded(
             agent.check,
@@ -358,6 +393,19 @@ def _location_for(state: GraphState, agent_name: str) -> LatLon | None:
                 return None
             return LatLon(lat=lat, lon=lon)
     return None
+
+
+def _scope_for(state: GraphState, agent_name: str) -> str:
+    """The Planner's per-invocation "point"/"area" flag (issue #174,
+    planner_agent.route_query). Defaults to "point" for any older plan /
+    invocation that never set it."""
+    plan = state.get("plan")
+    if plan is None:
+        return "point"
+    for inv in plan.invocations:
+        if inv.agent_name == agent_name:
+            return inv.input_payload.get("scope", "point")
+    return "point"
 
 
 def _time_window_for(state: GraphState, agent_name: str) -> TimeWindow | None:

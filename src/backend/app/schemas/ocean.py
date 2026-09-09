@@ -21,6 +21,24 @@ class PFZResult:
 
 
 @dataclass
+class NearbyPFZ:
+    """Issue #174: several PFZ centroids near the queried point, nearest
+    first — the answer to a "which zones" query, as opposed to PFZResult
+    (the single nearest one). Descriptive only: not consumed by the
+    Risk/Safety Figure 2 tree, only by Synthesis.
+
+    `zones` may be empty (feed reachable, but nothing published within
+    `radius_km`); that is distinct from the method returning None (feed
+    unavailable). Synthesis must not present an empty list as "an area was
+    surveyed and is clear"."""
+
+    zones: list[PFZResult]
+    radius_km: float
+    data_timestamp: datetime | None
+    is_stale: bool
+
+
+@dataclass
 class OceanParams:
     """SST / chlorophyll for the queried region.
 

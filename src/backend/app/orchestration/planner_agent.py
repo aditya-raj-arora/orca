@@ -109,12 +109,16 @@ restricted/protected zones?
 - A confidence score (0.0-1.0) reflecting how sure you are of this \
 extraction overall — lower it if the query is ambiguous or ungrammatical, \
 rather than guessing.
+- Whether the query asks about a single point/location or about a broader \
+AREA — i.e. it wants a LIST or COMPARISON of regions/zones ("which regions \
+show...", "which fishing zones should be avoided", "areas where..."). \
+Return "area" for the list/compare case, otherwise "point".
 
 Respond with ONLY a JSON object, no other text, matching this shape:
 {"location_resolvable": bool, "place_name": str|null, "lat": float|null, \
 "lon": float|null, "time_window_text": str|null, "intent_weather": bool, \
 "intent_safety": bool, "intent_fishing": bool, "intent_boundary": bool, \
-"intent_keywords": [str, ...], "confidence": float}
+"intent_keywords": [str, ...], "scope": "point"|"area", "confidence": float}
 """
 
 
@@ -140,6 +144,11 @@ class QueryEntities:
     intent_fishing: bool
     intent_boundary: bool
     confidence: float
+    # "point" (evaluate one location) or "area" (the query wants a list /
+    # comparison of zones — issue #174). route_query() passes this through to
+    # the ocean/geofencing invocations; the graph nodes then also call their
+    # list-nearby methods, not just the single-point ones.
+    scope: str = "point"
     # Raw keywords for the trace/debugging (FR-PLAN-4) — not itself used for
     # routing; the three intent_* booleans above are what route_query() reads.
     intent_keywords: list[str] = field(default_factory=list)
@@ -286,6 +295,7 @@ class PlannerAgent:
             intent_fishing=bool(data.get("intent_fishing", False)),
             intent_boundary=bool(data.get("intent_boundary", False)),
             confidence=float(data.get("confidence", 0.0)),
+            scope="area" if data.get("scope") == "area" else "point",
             intent_keywords=list(data.get("intent_keywords", [])),
         )
 
@@ -392,6 +402,12 @@ class PlannerAgent:
         safety_kw = ("safe", "safety", "risk", "danger", "go out", "venture")
         fishing_kw = ("fish", "fishing", "pfz", "catch", "zone")
         boundary_kw = ("boundary", "border", "restricted", "protected", "mpa", "imbl")
+        # issue #174: "which regions/zones ..." — asks for a list, not a point.
+        area_kw = (
+            "which region", "which zone", "which area", "which fishing zone",
+            "which zones", "which areas", "list of", "where are the",
+            "regions show", "zones should", "areas where", "compare",
+        )
 
         def _matches(keywords: tuple[str, ...]) -> list[str]:
             return [kw for kw in keywords if kw in text]
@@ -415,6 +431,8 @@ class PlannerAgent:
             intent_fishing=bool(_matches(fishing_kw)),
             intent_boundary=bool(_matches(boundary_kw)),
             confidence=_KEYWORD_FALLBACK_CONFIDENCE if matched else _NO_MATCH_CONFIDENCE,
+            # issue #174: "which regions/zones ..." asks for a list, not a point.
+            scope="area" if _matches(area_kw) else "point",
             # Surfaced in the trace (FR-PLAN-4) so a degraded run is visibly
             # degraded rather than silently looking like a normal extraction.
             intent_keywords=matched,
@@ -479,10 +497,19 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
             )
         )
 
+    if entities.scope == "area":
+        trace.append(
+            "Planner: query is area-scoped (asks which zones/regions, not one "
+            "point) -> ocean/geofencing agents will also list nearby zones (issue #174)"
+        )
+
     if entities.intent_fishing:
         trace.append("Planner: intent involves fishing zone/productivity -> invoking Ocean Agent")
         invocations.append(
-            AgentInvocationRequest(agent_name="ocean", input_payload={"location": location})
+            AgentInvocationRequest(
+                agent_name="ocean",
+                input_payload={"location": location, "scope": entities.scope},
+            )
         )
 
     # Geofencing runs for a safety question too, not just an explicit boundary
@@ -503,7 +530,10 @@ def route_query(entities: QueryEntities, location: dict, trace: list[str]) -> Ex
         )
         trace.append(f"Planner: intent involves {why} -> invoking Geofencing Agent")
         invocations.append(
-            AgentInvocationRequest(agent_name="geofencing", input_payload={"location": location})
+            AgentInvocationRequest(
+                agent_name="geofencing",
+                input_payload={"location": location, "scope": entities.scope},
+            )
         )
 
     if entities.intent_safety or entities.intent_fishing or entities.intent_boundary:
