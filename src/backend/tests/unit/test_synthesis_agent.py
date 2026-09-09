@@ -593,7 +593,11 @@ def test_route_caveat_is_appended_on_the_llm_composed_path():
             "data_timestamp": datetime(2026, 9, 1, 6, 0, tzinfo=UTC),
             "status": "ok",
         },
-        "risk_safety": {"verdict": "CAUTION", "rationale": "Moderate wind", "contributing_factors": []},
+        "risk_safety": {
+            "verdict": "CAUTION",
+            "rationale": "Moderate wind",
+            "contributing_factors": [],
+        },
     }
 
     response = SynthesisAgent(llm_client=fake_client).compose(plan, results, language="en")
