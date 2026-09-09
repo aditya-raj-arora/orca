@@ -19,7 +19,7 @@ it's kept accurate by review discipline (CONTRIBUTING.md §4).
 | FR-GEO-1..4 | Geofencing Agent | LLD §2.5 | `src/backend/app/agents/geofencing_agent.py`, `data_access/gis_boundary_adapter.py` | P4 |
 | FR-RISK-1..3 | Risk / Safety Agent | LLD §2.6, §4.2 | `src/backend/app/agents/risk_safety_agent.py` | P4 |
 | FR-SYN-1..3 | Synthesis Agent | LLD §2.7 | `src/backend/app/orchestration/synthesis_agent.py` | P2 |
-| FR-UI-1..4 | Web Client | HLD §3 | `src/frontend/src/components/Chat/`, `Map/`, `TraceViewer/` | P5, P6 |
+| FR-UI-1..4 | Web Client | HLD §3 | `src/frontend/src/components/Chat/` (chat, voice I/O, agent trace), `Map/` | P5, P6 |
 | FR-ALERT-1 | Planner + Risk/Safety extension point | HLD §3 | *not in scope for initial prototype — see SRS §6.5 Sprint 4* | — |
 | NFR-PERF-1..3 | Orchestration Layer (async fan-out, timeouts) | LLD §6 | `src/backend/app/orchestration/graph.py` | P1 |
 | NFR-REL-1..2 | Data Access Layer + Risk/Safety Agent | LLD §2.9, §2.6 | `data_access/*.py`, `risk_safety_agent.py` | P3, P4 |
