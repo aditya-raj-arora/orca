@@ -221,6 +221,52 @@ def _planner_with_llm_down() -> PlannerAgent:
     return PlannerAgent(llm_client=_DownLLM())
 
 
+class _FlakyLLM:
+    """Fails once, then succeeds — the transient-504 shape observed on the
+    deployed backend (#36's live rehearsal) that a bare retry clears."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    class _R:
+        text = (
+            '{"location_resolvable":true,"place_name":"Kochi","lat":9.93,'
+            '"lon":76.26,"time_window_text":null,"intent_weather":false,'
+            '"intent_safety":true,"intent_fishing":false,"intent_boundary":false,'
+            '"intent_keywords":["safe"],"confidence":0.9}'
+        )
+
+    @property
+    def models(self):
+        outer = self
+
+        class _Models:
+            @staticmethod
+            def generate_content(**_kwargs):
+                outer.calls += 1
+                if outer.calls == 1:
+                    raise TimeoutError("stub: transient 504 DEADLINE_EXCEEDED")
+                return _FlakyLLM._R()
+
+        return _Models()
+
+
+def test_extraction_retries_once_on_a_transient_llm_failure():
+    """#36: a single transient failure must not fall all the way to the
+    keyword fallback (which can never resolve a location) when a retry would
+    have worked."""
+    llm = _FlakyLLM()
+
+    entities = PlannerAgent(llm_client=llm).extract_entities(
+        NormalizedQuery(text="is it safe to fish near Kochi", language="en")
+    )
+
+    assert llm.calls == 2
+    assert entities.location_resolvable is True
+    assert entities.place_name == "Kochi"
+    assert entities.confidence == 0.9  # the LLM's own value, not the keyword sentinel
+
+
 def test_keyword_fallback_classifies_intent_when_the_llm_is_down():
     entities = _planner_with_llm_down().extract_entities(
         NormalizedQuery(text="is it safe to fish near the restricted zone", language="en")
