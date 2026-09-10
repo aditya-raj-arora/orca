@@ -16,6 +16,11 @@ type ChatMessage = {
   trace?: string[];
 };
 
+// How long the UI waits with NO message of any kind (trace_update included)
+// before treating a query as lost. Must exceed the backend's own worst case
+// ahead of its first trace line — see the effect that uses it below.
+const NO_RESPONSE_TIMEOUT_MS = 60_000;
+
 export default function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
@@ -187,6 +192,44 @@ export default function ChatPanel() {
       chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
     }
   }, [messages, traceSteps]);
+
+  // Backstop so "Thinking" can never spin forever.
+  //
+  // isProcessing is otherwise only ever cleared by a final_response or an
+  // error arriving. When a query is lost in transit — the failure mode behind
+  // the "second prompt hangs" bug — no message ever comes, so the spinner ran
+  // until the page was reloaded, with no way for the user to even retry.
+  // Both root causes are fixed (the server holds one connection across turns,
+  // and a dropped in-flight query is replayed on reconnect), but "the answer
+  // never arrives" must degrade to a visible, recoverable error rather than
+  // an indefinite spinner whatever the reason.
+  //
+  // The timer restarts on every trace_update, so this is SILENCE, not a cap
+  // on total query time: a legitimately slow query keeps reporting progress.
+  // The window has to clear the worst case before the first trace line —
+  // graph.py's PLANNER_TIMEOUT_SECONDS (50s) — so it only ever fires on a
+  // query that is genuinely never coming back.
+  useEffect(() => {
+    if (!isProcessing) return;
+    const timer = setTimeout(() => {
+      setIsProcessing(false);
+      const finishedTrace = traceStepsRef.current;
+      traceStepsRef.current = [];
+      setTraceSteps([]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          sender: "system",
+          text:
+            "Sorry, I didn't hear back about that one — the connection may have " +
+            "dropped. Please ask again.",
+          trace: finishedTrace,
+        },
+      ]);
+    }, NO_RESPONSE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isProcessing, traceSteps]);
 
   const handleSendText = () => {
     const trimmedInput = inputText.trim();

@@ -419,29 +419,21 @@ async def create_session() -> SessionResponse:
     return SessionResponse(session_id=session_id, created_at=datetime.now(UTC).isoformat())
 
 
-@app.websocket("/ws/v1/query/{session_id}")
-async def query_socket(websocket: WebSocket, session_id: str) -> None:
-    """Streams trace_update messages as each graph node completes, then one
-    final_response (LLD §5.2). One query per connection, matching the LLD's
-    single request/response-stream example — the client reconnects (or we
-    extend this to a receive loop) for a follow-up turn."""
-    await websocket.accept()
-    try:
-        raw = await websocket.receive_json()
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:  # noqa: BLE001 - malformed frame, not a crash
-        logger.warning("query_socket: malformed frame on receive_json: %s", exc)
-        await websocket.send_json({"type": "error", "message": "Malformed query message."})
-        await websocket.close()
-        return
+async def _handle_one_query(websocket: WebSocket, session_id: str, raw: dict) -> None:
+    """One query turn on an already-open socket: trace_update stream then a
+    single final_response (LLD §5.2).
 
+    Never closes the socket and never raises for a *query-level* failure — a
+    bad payload, an unavailable language service or a graph bug all report
+    themselves as an "error" message and return, leaving the connection ready
+    for the next turn. Only a genuine client disconnect propagates
+    (WebSocketDisconnect), which is what ends query_socket's receive loop.
+    """
     try:
         body = QueryRequest(**{k: v for k, v in raw.items() if k != "type"})
     except Exception as exc:  # noqa: BLE001 - bad payload shape, not a crash
         logger.warning("query_socket: bad QueryRequest payload shape: %s", exc)
         await websocket.send_json({"type": "error", "message": "Malformed query message."})
-        await websocket.close()
         return
 
     context = _get_or_create_context(session_id)
@@ -454,7 +446,6 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
         await websocket.send_json(
             {"type": "error", "message": "Language service is temporarily unavailable."}
         )
-        await websocket.close()
         return
 
     compiled = _build_graph()
@@ -486,7 +477,8 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
         response = _final_response(state, query.language, audio_b64)
         await websocket.send_json({"type": "final_response", **response.model_dump()})
     except WebSocketDisconnect:
-        return
+        # The client is gone — let query_socket's loop see this and stop.
+        raise
     except Exception as exc:  # noqa: BLE001 - #129: every node already degrades
         # (see graph.py's _call_bounded); reaching here means an actual bug
         # in the wiring above it (main.py itself), not an agent/LLM failure.
@@ -498,7 +490,59 @@ async def query_socket(websocket: WebSocket, session_id: str) -> None:
             )
         except Exception:  # noqa: BLE001 - socket may already be unusable
             pass
+
+
+@app.websocket("/ws/v1/query/{session_id}")
+async def query_socket(websocket: WebSocket, session_id: str) -> None:
+    """Streams trace_update messages as each graph node completes, then one
+    final_response per query (LLD §5.2).
+
+    MANY queries per connection — the receive loop this docstring used to
+    describe as a future option ("the client reconnects, or we extend this to
+    a receive loop"). Closing after every turn and making the client reconnect
+    was the cause of the "second prompt hangs on Thinking forever" bug, and it
+    could not be fixed on the client alone:
+
+      - The close only *starts* a handshake. Deployed behind Render's proxy it
+        never completed — production logs show dozens of uvicorn "connection
+        open" lines and not one "connection closed" — so the browser was never
+        told the socket had died and left readyState === OPEN.
+      - The client's send() takes its "connection is healthy" branch on
+        readyState === OPEN, so the next query was written into a socket this
+        handler had already returned from. Nobody was in receive_json() to read
+        it: the frame was swallowed with no error, no reply, and no reconnect,
+        and the UI span "Thinking" forever.
+      - Waiting "a while" appeared to fix it only because some *external*
+        timeout (the proxy reaping an idle connection) eventually killed the
+        zombie, which finally fired onclose and triggered the client's
+        reconnect — hence "immediately = stalls, later = fine".
+
+    Staying open removes the whole class of problem rather than racing it: the
+    server is always parked in receive_json() ready for the next turn, so
+    "readyState is OPEN" is true again instead of merely unfalsified. A
+    query-level failure reports itself and keeps the connection (see
+    _handle_one_query) rather than dropping the user's session with it.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            try:
+                raw = await websocket.receive_json()
+            except WebSocketDisconnect:
+                return
+            except Exception as exc:  # noqa: BLE001 - malformed frame, not a crash
+                logger.warning("query_socket: malformed frame on receive_json: %s", exc)
+                await websocket.send_json(
+                    {"type": "error", "message": "Malformed query message."}
+                )
+                continue
+
+            await _handle_one_query(websocket, session_id, raw)
+    except WebSocketDisconnect:
+        return
     finally:
+        # Only reached once the client is actually gone (or the server is
+        # shutting down) — never between turns.
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001 - already closed/disconnected, nothing to do

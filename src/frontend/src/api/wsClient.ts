@@ -51,13 +51,28 @@ class WSClient {
   private onStatusCb: StatusCallback | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  // #170: the backend closes the socket after every query (one query per
-  // connection, main.py's query_socket) and the client reconnects with a
-  // backoff. A query sent inside that reconnect window used to be silently
+  // #170: a query sent while the socket isn't open used to be silently
   // dropped ("WebSocket is not open. Cannot send message.") with nothing in
   // the UI reflecting it, so the trace panel sat on "Awaiting..." forever.
-  // Queue it instead and flush once the new connection is open.
+  // Queue it instead and flush once the connection is open.
+  //
+  // The backend now holds ONE connection open across many turns (main.py's
+  // query_socket receive loop), so this queue is for genuine drops —
+  // reconnects, network blips, a sleeping laptop — not for every single
+  // query as it was when the server closed after each one.
   private pendingQueue: ClientQueryMessage[] = [];
+  // The query we've sent but haven't seen a terminal message for yet.
+  //
+  // readyState === OPEN is NOT proof the peer is still listening: a socket
+  // whose server side is gone (or whose close frame never made it back
+  // through a proxy) still reports OPEN, and send() on it succeeds silently
+  // into nowhere. That is exactly how the "second prompt spins on Thinking
+  // forever" bug worked — the query vanished and nothing ever resent it.
+  // Holding onto the in-flight query means a close can put it BACK on the
+  // queue to be replayed, instead of losing it with the connection.
+  // Replaying is safe here: queries are read-only lookups, so a duplicate
+  // costs a little work, whereas a lost one costs the user their whole turn.
+  private inFlight: ClientQueryMessage | null = null;
 
   connect(sessionId: string, onMessage: MessageCallback, onStatus?: StatusCallback) {
     this.sessionId = sessionId;
@@ -83,6 +98,10 @@ class WSClient {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data) as ServerMessage;
+        // This turn is finished — nothing left to replay if we drop now.
+        if (msg.type === "final_response" || msg.type === "error") {
+          this.inFlight = null;
+        }
         if (this.onMessageCb) this.onMessageCb(msg);
       } catch (e) {
         console.error("Failed to parse WS message", e);
@@ -98,6 +117,14 @@ class WSClient {
 
     this.ws.onclose = () => {
       console.log("WebSocket closed.");
+      // A query that was still awaiting its answer went down with the
+      // socket. Put it at the front of the queue so the reconnect replays
+      // it, rather than leaving the UI waiting for a reply that can never
+      // arrive.
+      if (this.inFlight) {
+        this.pendingQueue.unshift(this.inFlight);
+        this.inFlight = null;
+      }
       this.onStatusCb?.("closed");
       this.scheduleReconnect();
     };
@@ -124,12 +151,14 @@ class WSClient {
     this.pendingQueue = [];
     for (const msg of queued) {
       this.ws?.send(JSON.stringify(msg));
+      this.inFlight = msg;
     }
   }
 
   send(msg: ClientQueryMessage) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      this.inFlight = msg;
     } else {
       console.warn("WebSocket not open yet — queuing message until reconnected.");
       this.pendingQueue.push(msg);
@@ -138,6 +167,7 @@ class WSClient {
 
   close() {
     this.pendingQueue = [];
+    this.inFlight = null;
     if (this.ws) {
       this.ws.onclose = null; // Prevent reconnect loop
       this.ws.close();
