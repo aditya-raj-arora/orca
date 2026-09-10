@@ -472,3 +472,89 @@ def test_every_synthesis_instance_shares_one_llm_client(monkeypatch):
 
     assert constructed["n"] == 1
     assert first is second
+
+
+# ---------------------------------------------------------------------- #
+# Multi-turn on ONE connection.
+#
+# Regression cover for the "second prompt hangs on Thinking forever" bug.
+# The socket used to serve exactly one query and then close, leaving the
+# client to reconnect. Deployed, that close never completed (production
+# logs: dozens of uvicorn "connection open", zero "connection closed"), so
+# the browser kept readyState === OPEN and wrote the next query into a
+# socket nobody was reading — swallowed silently, no reply, spinner forever.
+# These pin the connection staying open and serving turn after turn.
+# ---------------------------------------------------------------------- #
+
+
+def _drain_to_final(ws) -> dict:
+    """Read messages until this turn's terminal one (final_response/error)."""
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] in ("final_response", "error"):
+            return msg
+
+
+def test_second_query_is_answered_on_the_same_connection(monkeypatch):
+    client = _client(monkeypatch)
+    with client.websocket_connect("/ws/v1/query/multi-1") as ws:
+        ws.send_json({"type": "query", "mode": "text", "text": "what is the weather in chennai"})
+        first = _drain_to_final(ws)
+        assert first["type"] == "final_response"
+
+        # The exact thing that used to hang: a follow-up sent straight down
+        # the same socket, with no reconnect in between.
+        ws.send_json({"type": "query", "mode": "text", "text": "is it safe to fish near chennai"})
+        second = _drain_to_final(ws)
+        assert second["type"] == "final_response"
+        assert second["text"] == "Conditions are moderate near Kochi."
+
+
+def test_many_turns_all_answered_on_one_connection(monkeypatch):
+    """Not just two — the connection is not a one-or-two-shot resource."""
+    client = _client(monkeypatch)
+    with client.websocket_connect("/ws/v1/query/multi-2") as ws:
+        for _ in range(5):
+            ws.send_json({"type": "query", "mode": "text", "text": "weather in chennai"})
+            assert _drain_to_final(ws)["type"] == "final_response"
+
+
+def test_a_malformed_frame_does_not_kill_the_connection(monkeypatch):
+    """A bad payload is this turn's problem, not the session's — the user
+    should not lose their connection (and silently their next query) over a
+    single malformed message."""
+    client = _client(monkeypatch)
+    with client.websocket_connect("/ws/v1/query/multi-3") as ws:
+        ws.send_json({"type": "query"})  # no mode -> bad QueryRequest shape
+        assert _drain_to_final(ws)["type"] == "error"
+
+        ws.send_json({"type": "query", "mode": "text", "text": "weather in chennai"})
+        assert _drain_to_final(ws)["type"] == "final_response"
+
+
+def test_a_language_service_failure_does_not_kill_the_connection(monkeypatch):
+    """FR-LANG-6's error path used to close the socket too, so the voice
+    query after an ASR outage was swallowed the same way."""
+    client = _client(monkeypatch)
+    with client.websocket_connect("/ws/v1/query/multi-4") as ws:
+        # voice mode with no Bhashini/Sarvam key -> BhashiniUnavailableError
+        ws.send_json({"type": "query", "mode": "voice", "audio_base64": "AAAA"})
+        err = _drain_to_final(ws)
+        assert err["type"] == "error"
+        assert "Language service" in err["message"]
+
+        ws.send_json({"type": "query", "mode": "text", "text": "weather in chennai"})
+        assert _drain_to_final(ws)["type"] == "final_response"
+
+
+def test_follow_up_turn_reuses_the_session_context(monkeypatch):
+    """The point of holding one connection open: turn 2 lands in the same
+    ConversationContext, which is what FR-PLAN-5 follow-ups need."""
+    client = _client(monkeypatch)
+    with client.websocket_connect("/ws/v1/query/multi-5") as ws:
+        ws.send_json({"type": "query", "mode": "text", "text": "weather in chennai"})
+        _drain_to_final(ws)
+        ws.send_json({"type": "query", "mode": "text", "text": "what about tomorrow"})
+        _drain_to_final(ws)
+
+    assert len(gateway._SESSIONS["multi-5"].turns) == 2
