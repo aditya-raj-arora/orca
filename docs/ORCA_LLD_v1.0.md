@@ -404,6 +404,34 @@ Server → Client messages (streamed):
   "map_payload": { "markers": [...], "zones": [...] } }
 ```
 
+**Connection lifecycle.** One connection carries MANY query turns. The
+server accepts the socket, then loops: read a `query`, stream that turn's
+`trace_update` messages, send exactly one terminal message for it
+(`final_response`, or `error`), and go straight back to waiting for the
+next `query` on the same socket. The message shapes above are unchanged by
+this — it governs how many turns a connection serves, not what is sent.
+
+Two rules follow from it, both load-bearing:
+
+- **A query-level failure must not close the connection.** A malformed
+  payload or an unavailable language service (FR-LANG-6) is reported as an
+  `error` message for that turn; the socket stays open and the next turn
+  proceeds normally. Only a client disconnect ends the loop.
+- **The server must be back in its receive state before the client can
+  send again.** The client re-enables input the moment a terminal message
+  arrives, so any window where the socket looks open to the browser but no
+  one is reading it is a window where a query is silently swallowed.
+
+The connection was originally one-query-per-connection, closed by the
+server after each turn, with the client expected to reconnect. That is
+**not** a valid implementation of this section and must not be
+reintroduced: `close()` only *starts* a closing handshake, and when it does
+not complete (observed in deployment behind a proxy — uvicorn logged
+"connection open" many times and "connection closed" never), the browser
+keeps `readyState === OPEN` and writes the next query into a socket the
+handler has already returned from. The frame is lost with no error and no
+reply, and the session appears to hang forever on the following turn.
+
 ### 5.3 POST /api/v1/query/{session_id}
 
 Non-streaming equivalent of Section 5.2, for text-only clients; request and final response bodies follow the same schema as the WebSocket "query" and "final_response" messages above.
