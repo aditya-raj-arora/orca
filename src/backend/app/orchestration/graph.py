@@ -95,6 +95,26 @@ SYNTHESIS_TIMEOUT_SECONDS = 12.0
 # again in a comment-only coupling.
 WEATHER_TIMEOUT_SECONDS = 8.0
 
+# Bound on the Planner node as a whole (not just extract_entities()'s own
+# internal LLM retries — see the "second prompt hangs forever" bug this
+# constant exists to close). planner_agent.py's _construct_llm_client()
+# comment already flagged the gap: "graph._planner_node calls plan()
+# directly, not through _call_bounded, so nothing else would ever stop a
+# stalled request" — relying solely on the google-genai SDK's http_options
+# timeout to save it. In practice that backstop isn't reliable enough (a
+# stall that the SDK's own timeout doesn't cover — DNS, TLS, or a hung
+# keep-alive connection — blocks planner.plan() forever, and with it the
+# whole query, since nothing else awaits or cancels a synchronous call).
+# Wiring this node through _call_bounded like every other one guarantees an
+# upper bound regardless of what the SDK does internally.
+#
+# Sized above extract_entities()'s own documented worst case (25s first
+# attempt + 2 retries * 10s = 45s, planner_agent.py's _MAX_RETRIES/
+# _RETRY_TIMEOUT_S/_LLM_TIMEOUT_S) plus headroom, so a legitimately slow but
+# still-recovering extraction isn't cut off before it reaches its own
+# keyword-matching fallback.
+PLANNER_TIMEOUT_SECONDS = 50.0
+
 
 def _merge_dicts(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Reducer for GraphState.results: the three specialist nodes run in
@@ -184,8 +204,15 @@ async def _call_bounded(
 
 def _planner_node(planner: PlannerAgent):
     async def _node(state: GraphState) -> dict[str, Any]:
-        plan = planner.plan(state["query"], state["context"])
-        return {"plan": plan, "trace": list(plan.trace)}
+        plan, trace_line = await _call_bounded(
+            planner.plan,
+            state["query"],
+            state["context"],
+            unavailable=_unavailable_plan(),
+            agent_label="Planner",
+            timeout=PLANNER_TIMEOUT_SECONDS,
+        )
+        return {"plan": plan, "trace": [*plan.trace, trace_line]}
 
     return _node
 
@@ -493,6 +520,22 @@ def _unavailable_ocean_params() -> Any:
     # represented by None fields, same convention OceanAgent.get_ocean_
     # parameters() itself uses when INCOIS doesn't publish a value.
     return OceanParams(sea_surface_temp_c=None, chlorophyll_mg_m3=None)
+
+
+def _unavailable_plan() -> ExecutionPlan:
+    """planner.plan() blew past PLANNER_TIMEOUT_SECONDS (or crashed outside
+    extract_entities()'s own retry/keyword-fallback path — e.g. a bug in
+    route_query() or context handling, not an LLM failure). Same "degrade,
+    don't crash or hang the query" rule as every other _call_bounded sentinel
+    here: no invocations (there's no resolved plan to run agents against),
+    surfaced to the user as an honest "try again" rather than an indefinite
+    spinner."""
+    return ExecutionPlan(
+        needs_clarification=True,
+        clarification_prompt=(
+            "Sorry, that took longer than expected — could you try asking again?"
+        ),
+    )
 
 
 def _unavailable_composed_response() -> ComposedResponse:
