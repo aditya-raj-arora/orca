@@ -25,7 +25,7 @@ shapely>=2.1.2
 
 # Persistence (owner P4)
 sqlalchemy[asyncio]>=2.0.52
-asyncpg>=0.29
+asyncpg>=0.31.0
 geoalchemy2>=0.20.0
 # Sync driver, separate from asyncpg above — GISBoundaryAdapter and
 # app/db/load_boundaries.py connect directly via psycopg rather than through
