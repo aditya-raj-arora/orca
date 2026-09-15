@@ -1,7 +1,7 @@
 # Core (HLD §6 tech stack)
 fastapi>=0.115
 uvicorn[standard]>=0.30
-pydantic>=2.8
+pydantic>=2.13.5
 pydantic-settings>=2.4
 websockets>=13.0
 
