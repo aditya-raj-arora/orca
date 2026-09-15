@@ -15,7 +15,7 @@ langgraph>=1.2.11
 # needed; see docs/CREDENTIALS.md #1. Groq is the documented backup. Keep all
 # four behind LLM_PROVIDER config so switching is a one-line env change.)
 google-genai>=0.3
-groq>=0.11
+groq>=1.7.0
 anthropic>=1.4.0
 openai>=1.40
 
